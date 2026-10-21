@@ -8,6 +8,7 @@ into the output device you choose. Pick "CABLE Input" (VB-Cable) and then select
 import json
 import os
 import socket
+import sys
 import struct
 import threading
 import tkinter as tk
@@ -17,6 +18,11 @@ try:
     import keyboard  # global hotkeys (Windows)
 except Exception:  # pragma: no cover
     keyboard = None
+
+def resource(name):
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, name)
+
 
 MAGIC = b"UWUM"
 HEADER = struct.Struct(">4sIBB")  # magic, sample rate, channels, bits
@@ -185,6 +191,10 @@ class App:
         self.root = root
         root.title("UwU Mic Client")
         root.resizable(False, False)
+        try:
+            root.iconbitmap(resource("uwumic.ico"))
+        except Exception:
+            pass
         cfg = {}
         try:
             with open(CFG_PATH, encoding="utf-8") as f:
