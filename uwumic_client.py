@@ -67,23 +67,23 @@ class Jitter:
             return out
 
 
-class AudioSink:
-    """Plays PCM16 mono into a Windows output device, with volume/mute and a level meter."""
+class _Out:
+    """One Windows output stream fed from its own jitter buffer, with volume and mute applied."""
 
-    def __init__(self, rate, device, app):
+    def __init__(self, rate, device, app, meter):
         import numpy as np
         import sounddevice as sd
 
         self.jit = Jitter(rate)
         self.channels = 2
-        self.app = app
 
         def callback(outdata, frames, time_info, status):
             raw = self.jit.pull(frames * 2)
             a = np.frombuffer(raw, dtype="<i2").astype(np.float32)
             g = 0.0 if app.muted else app.gain
             a = np.clip(a * g, -32768, 32767)
-            app.level = float(np.max(np.abs(a))) / 32768 if a.size else 0.0
+            if meter:
+                app.level = float(np.max(np.abs(a))) / 32768 if a.size else 0.0
             a = a.astype("<i2")
             if self.channels == 2:
                 a = np.repeat(a, 2)
@@ -109,7 +109,6 @@ class AudioSink:
                 last = e
         else:
             raise last
-        app.streaming = True
 
     def push(self, data):
         self.jit.push(data)
@@ -120,9 +119,53 @@ class AudioSink:
             self.stream.close()
         except Exception:
             pass
-        finally:
-            self.app.streaming = False
-            self.app.level = 0.0
+
+
+class AudioSink:
+    """Plays the phone's audio into the chosen output (e.g. CABLE Input) and, only when asked,
+    also into a speaker so you can hear what is being received."""
+
+    def __init__(self, rate, device, app):
+        self.app = app
+        self.rate = rate
+        self.device = device
+        self.mon = None
+        self.main = _Out(rate, device, app, True)
+        app.streaming = True
+        app.sink = self
+        if app.monitor_device is not None:
+            self.set_monitor(app.monitor_device)
+
+    def set_monitor(self, device):
+        """device = Windows device index to also play on, or None to switch the speaker off."""
+        old, self.mon = self.mon, None
+        if old is not None:
+            old.close()
+        if device is None:
+            return
+        if device == self.device:
+            self.app.status = "Speaker test: choose a different device than the output above"
+            return
+        try:
+            self.mon = _Out(self.rate, device, self.app, False)
+        except Exception as e:
+            self.app.status = f"Speaker error: {e}"
+
+    def push(self, data):
+        self.main.push(data)
+        mon = self.mon
+        if mon is not None:
+            mon.push(data)
+
+    def close(self):
+        mon, self.mon = self.mon, None
+        if mon is not None:
+            mon.close()
+        self.main.close()
+        self.app.streaming = False
+        self.app.level = 0.0
+        if getattr(self.app, "sink", None) is self:
+            self.app.sink = None
 
 
 # ----------------------------------------------------------------- network
@@ -277,6 +320,8 @@ class App:
         self.shown = 0.0
         self.streaming = False
         self.active = False
+        self.sink = None
+        self.monitor_device = None  # speaker test is always off when the app starts
         self.status = "Idle"
         self.stop = threading.Event()
         self.hotkey = cfg.get("hotkey", "ctrl+shift+m")
@@ -303,32 +348,39 @@ class App:
             row=3, column=0, columnspan=2, sticky="w", **pad)
         self.dev = ttk.Combobox(f, state="readonly", width=48)
         self.dev.grid(row=4, column=0, columnspan=2, **pad)
+        self.mon_var = tk.BooleanVar(value=False)
+        self.mon_chk = ttk.Checkbutton(f, text="Play on speaker (test) - use headphones to avoid echo",
+                                       variable=self.mon_var, command=self.on_monitor)
+        self.mon_chk.grid(row=5, column=0, columnspan=2, sticky="w", **pad)
+        self.mon_dev = ttk.Combobox(f, state="readonly", width=48)
+        self.mon_dev.grid(row=6, column=0, columnspan=2, **pad)
+        self.mon_dev.bind("<<ComboboxSelected>>", lambda e: self.on_monitor())
         self.devmap = {}
-        self.load_devices(cfg.get("device"))
+        self.load_devices(cfg.get("device"), cfg.get("monitor"))
 
         self.vol_label = ttk.Label(f, text=f"Volume {round(self.gain * 100)}%")
-        self.vol_label.grid(row=5, column=0, columnspan=2, sticky="w", **pad)
+        self.vol_label.grid(row=7, column=0, columnspan=2, sticky="w", **pad)
         try:
             bg = ttk.Style().lookup("TFrame", "background") or root.cget("bg")
         except Exception:
             bg = "#f0f0f0"
         self.slider = LevelSlider(f, self.on_vol, self.gain, bg=bg)
-        self.slider.grid(row=6, column=0, columnspan=2, **pad)
+        self.slider.grid(row=8, column=0, columnspan=2, **pad)
 
         self.mute_btn = ttk.Button(f, text="Mute", command=self.toggle_mute)
         self.hk_btn = ttk.Button(f, command=self.capture_hotkey)
-        self.mute_btn.grid(row=8, column=0, sticky="ew", **pad)
-        self.hk_btn.grid(row=8, column=1, sticky="ew", **pad)
+        self.mute_btn.grid(row=9, column=0, sticky="ew", **pad)
+        self.hk_btn.grid(row=9, column=1, sticky="ew", **pad)
 
         self.status_label = ttk.Label(f, text="Idle", foreground="gray", wraplength=340)
-        self.status_label.grid(row=9, column=0, columnspan=2, sticky="w", **pad)
+        self.status_label.grid(row=10, column=0, columnspan=2, sticky="w", **pad)
 
         self.apply_hotkey(self.hotkey)
         root.protocol("WM_DELETE_WINDOW", self.close)
         self.poll()
 
     # -- devices
-    def load_devices(self, saved):
+    def load_devices(self, saved, saved_monitor=None):
         try:
             devs = output_devices()
         except Exception as e:
@@ -343,6 +395,20 @@ class App:
             cable.sort(key=lambda n: "WASAPI" not in n)
             pick = cable[0] if cable else (names[0] if names else "")
         self.dev.set(pick)
+
+        self.mon_dev["values"] = names
+        mon = saved_monitor if saved_monitor in self.devmap else None
+        if not mon:
+            try:
+                import sounddevice as sd
+                default_index = sd.default.device[1]
+                mon = next((n for n, i in self.devmap.items() if i == default_index), None)
+            except Exception:
+                mon = None
+        if not mon:
+            others = [n for n in names if "CABLE" not in n]
+            mon = others[0] if others else (names[0] if names else "")
+        self.mon_dev.set(mon)
 
     # -- connection
     def set_status(self, text):
@@ -404,6 +470,22 @@ class App:
         if self.gain > 0 and self.muted:
             self.set_muted(False)
 
+    def on_monitor(self):
+        name = self.mon_dev.get()
+        on = bool(self.mon_var.get()) and name in self.devmap
+        self.monitor_device = self.devmap[name] if on else None
+        worked = True
+        if self.sink is not None:
+            self.sink.set_monitor(self.monitor_device)
+            worked = (not on) or self.sink.mon is not None
+        if worked:
+            if on:
+                self.status = ("Speaker test ON - you can hear the received voice" if self.sink is not None
+                               else "Speaker test is on - it will play once you connect")
+            elif self.sink is not None:
+                self.status = "Connected - streaming"
+        self.save()
+
     def set_muted(self, m):
         self.muted = m
         self.mute_btn.config(text="Unmute" if m else "Mute")
@@ -459,7 +541,7 @@ class App:
     def save(self):
         try:
             with open(CFG_PATH, "w", encoding="utf-8") as f:
-                json.dump({"ip": self.ip.get().strip(), "port": self.port.get(), "device": self.dev.get(),
+                json.dump({"ip": self.ip.get().strip(), "port": self.port.get(), "device": self.dev.get(), "monitor": self.mon_dev.get(),
                            "gain": self.gain, "hotkey": self.hotkey}, f)
         except Exception:
             pass

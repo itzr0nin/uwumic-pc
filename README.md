@@ -10,6 +10,11 @@ It creates "CABLE Input" (where this app plays) and "CABLE Output" (the micropho
 1. Phone: open UwU Mic and tap Start. Note the IP and port it shows.
 2. PC: open UwUMicClient.exe, type the phone's IP and port, choose "CABLE Input" as the output device.
 3. Press Connect. In Discord/OBS/games choose "CABLE Output" as the microphone.
+**Play on speaker (test):** off by default. Tick it to also hear the received voice on a speaker or headphones
+(pick which one in the list under the box) while the other apps still get the voice through CABLE. Untick to stop.
+Tip: use headphones, or the phone mic will pick up the speaker and echo.
+If you hear your voice without ticking it, the "Output device" above is set to your speakers: choose "CABLE Input".
+
 One button connects and disconnects. The bar is the loudness meter and the volume slider in one: the bright fill is how loud the
 phone is, the hexagon handle is the volume (0-100%). Mute moves the handle to 0 and empties the meter. A global changeable hotkey
 (click the hotkey button, press your keys) toggles mute.
