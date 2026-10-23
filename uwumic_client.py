@@ -225,6 +225,12 @@ def stream(host, port, stop, make_sink, status):
                 pass
 
 
+def is_virtual(name):
+    """True for virtual-cable style outputs (VB-Cable, VoiceMeeter, ...) that make no sound on speakers."""
+    n = (name or "").lower()
+    return any(k in n for k in ("cable", "vb-audio", "voicemeeter", "virtual"))
+
+
 def output_devices():
     import sounddevice as sd
 
@@ -348,32 +354,36 @@ class App:
             row=3, column=0, columnspan=2, sticky="w", **pad)
         self.dev = ttk.Combobox(f, state="readonly", width=48)
         self.dev.grid(row=4, column=0, columnspan=2, **pad)
+        self.dev.bind("<<ComboboxSelected>>", lambda e: self.update_route())
+        self.route_label = ttk.Label(f, text="", wraplength=340)
+        self.route_label.grid(row=5, column=0, columnspan=2, sticky="w", **pad)
         self.mon_var = tk.BooleanVar(value=False)
         self.mon_chk = ttk.Checkbutton(f, text="Play on speaker (test) - use headphones to avoid echo",
                                        variable=self.mon_var, command=self.on_monitor)
-        self.mon_chk.grid(row=5, column=0, columnspan=2, sticky="w", **pad)
+        self.mon_chk.grid(row=6, column=0, columnspan=2, sticky="w", **pad)
         self.mon_dev = ttk.Combobox(f, state="readonly", width=48)
-        self.mon_dev.grid(row=6, column=0, columnspan=2, **pad)
+        self.mon_dev.grid(row=7, column=0, columnspan=2, **pad)
         self.mon_dev.bind("<<ComboboxSelected>>", lambda e: self.on_monitor())
         self.devmap = {}
         self.load_devices(cfg.get("device"), cfg.get("monitor"))
+        self.update_route()
 
         self.vol_label = ttk.Label(f, text=f"Volume {round(self.gain * 100)}%")
-        self.vol_label.grid(row=7, column=0, columnspan=2, sticky="w", **pad)
+        self.vol_label.grid(row=8, column=0, columnspan=2, sticky="w", **pad)
         try:
             bg = ttk.Style().lookup("TFrame", "background") or root.cget("bg")
         except Exception:
             bg = "#f0f0f0"
         self.slider = LevelSlider(f, self.on_vol, self.gain, bg=bg)
-        self.slider.grid(row=8, column=0, columnspan=2, **pad)
+        self.slider.grid(row=9, column=0, columnspan=2, **pad)
 
         self.mute_btn = ttk.Button(f, text="Mute", command=self.toggle_mute)
         self.hk_btn = ttk.Button(f, command=self.capture_hotkey)
-        self.mute_btn.grid(row=9, column=0, sticky="ew", **pad)
-        self.hk_btn.grid(row=9, column=1, sticky="ew", **pad)
+        self.mute_btn.grid(row=10, column=0, sticky="ew", **pad)
+        self.hk_btn.grid(row=10, column=1, sticky="ew", **pad)
 
         self.status_label = ttk.Label(f, text="Idle", foreground="gray", wraplength=340)
-        self.status_label.grid(row=10, column=0, columnspan=2, sticky="w", **pad)
+        self.status_label.grid(row=11, column=0, columnspan=2, sticky="w", **pad)
 
         self.apply_hotkey(self.hotkey)
         root.protocol("WM_DELETE_WINDOW", self.close)
@@ -393,8 +403,10 @@ class App:
         if not pick:
             cable = [n for n in names if "CABLE Input" in n]
             cable.sort(key=lambda n: "WASAPI" not in n)
-            pick = cable[0] if cable else (names[0] if names else "")
+            pick = cable[0] if cable else ""   # never default to your speakers
         self.dev.set(pick)
+        if not pick:
+            self.status = "VB-Cable not found: install it (vb-audio.com/Cable), restart this app, choose CABLE Input"
 
         self.mon_dev["values"] = names
         mon = saved_monitor if saved_monitor in self.devmap else None
@@ -409,6 +421,18 @@ class App:
             others = [n for n in names if "CABLE" not in n]
             mon = others[0] if others else (names[0] if names else "")
         self.mon_dev.set(mon)
+
+    def update_route(self):
+        name = self.dev.get()
+        if name not in self.devmap:
+            self.route_label.config(text="No output selected. Install VB-Cable and choose CABLE Input.",
+                                    foreground="#c05a00")
+        elif is_virtual(name):
+            self.route_label.config(text="Virtual cable: apps get your voice, nothing plays on your speakers.",
+                                    foreground="#1a8f5a")
+        else:
+            self.route_label.config(text="This is a normal speaker: you will hear the voice and apps can't use it "
+                                         "as a mic. Choose CABLE Input.", foreground="#c05a00")
 
     # -- connection
     def set_status(self, text):
@@ -430,8 +454,15 @@ class App:
         if not ip:
             messagebox.showerror("UwU Mic", "Enter the phone's IP address.")
             return
-        if self.dev.get() not in self.devmap:
-            messagebox.showerror("UwU Mic", "Choose an output device.")
+        name = self.dev.get()
+        if name not in self.devmap:
+            messagebox.showerror("UwU Mic", "No output device is selected.\n\nInstall the free VB-Cable driver "
+                                 "(vb-audio.com/Cable), restart this app and choose \"CABLE Input\".")
+            return
+        if not is_virtual(name) and not messagebox.askyesno(
+                "UwU Mic", "This output is a normal speaker/headphone device.\n\nYou will hear the received voice, "
+                "and apps like Discord or games will NOT get it as a microphone.\n\n"
+                "For that, choose \"CABLE Input\".\n\nConnect anyway?"):
             return
         self.save()
         self.stop = threading.Event()

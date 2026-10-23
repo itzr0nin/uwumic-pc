@@ -13,7 +13,10 @@ It creates "CABLE Input" (where this app plays) and "CABLE Output" (the micropho
 **Play on speaker (test):** off by default. Tick it to also hear the received voice on a speaker or headphones
 (pick which one in the list under the box) while the other apps still get the voice through CABLE. Untick to stop.
 Tip: use headphones, or the phone mic will pick up the speaker and echo.
-If you hear your voice without ticking it, the "Output device" above is set to your speakers: choose "CABLE Input".
+By default nothing plays on your speakers: the app only auto-selects "CABLE Input", never your speakers, and it warns you
+(orange hint + a question when you press Connect) if the Output device is a normal speaker or headphone device.
+Still hearing yourself? Windows may be monitoring the cable: Sound settings > Recording > "CABLE Output" > Properties >
+Listen tab > untick "Listen to this device".
 
 One button connects and disconnects. The bar is the loudness meter and the volume slider in one: the bright fill is how loud the
 phone is, the hexagon handle is the volume (0-100%). Mute moves the handle to 0 and empties the meter. A global changeable hotkey
