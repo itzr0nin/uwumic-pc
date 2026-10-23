@@ -10,7 +10,9 @@ It creates "CABLE Input" (where this app plays) and "CABLE Output" (the micropho
 1. Phone: open UwU Mic and tap Start. Note the IP and port it shows.
 2. PC: open UwUMicClient.exe, type the phone's IP and port, choose "CABLE Input" as the output device.
 3. Press Connect. In Discord/OBS/games choose "CABLE Output" as the microphone.
-Disconnect, volume, Mute and a global changeable hotkey (click the hotkey button, press your keys) are in the window.
+One button connects and disconnects. The bar is the loudness meter and the volume slider in one: the bright fill is how loud the
+phone is, the hexagon handle is the volume (0-100%). Mute moves the handle to 0 and empties the meter. A global changeable hotkey
+(click the hotkey button, press your keys) toggles mute.
 If Windows SmartScreen warns about an unknown publisher: More info > Run anyway.
 
 ## How to build the EXE

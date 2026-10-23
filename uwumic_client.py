@@ -27,6 +27,9 @@ def resource(name):
 MAGIC = b"UWUM"
 HEADER = struct.Struct(">4sIBB")  # magic, sample rate, channels, bits
 DEFAULT_PORT = 8125
+
+CYAN, RED, AMBER, GREY = "#00E5FF", "#FF0A45", "#F5B544", "#6B7280"
+INK_ON_CYAN = "#04121A"
 CFG_PATH = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "UwUMicClient.json")
 
 
@@ -73,6 +76,7 @@ class AudioSink:
 
         self.jit = Jitter(rate)
         self.channels = 2
+        self.app = app
 
         def callback(outdata, frames, time_info, status):
             raw = self.jit.pull(frames * 2)
@@ -105,6 +109,7 @@ class AudioSink:
                 last = e
         else:
             raise last
+        app.streaming = True
 
     def push(self, data):
         self.jit.push(data)
@@ -115,6 +120,9 @@ class AudioSink:
             self.stream.close()
         except Exception:
             pass
+        finally:
+            self.app.streaming = False
+            self.app.level = 0.0
 
 
 # ----------------------------------------------------------------- network
@@ -185,6 +193,68 @@ def output_devices():
     return out
 
 
+# ----------------------------------------------------------------- merged meter + volume
+class LevelSlider(tk.Canvas):
+    """One bar: the bright fill is the live loudness, the hexagon handle is the volume (0-100%)."""
+
+    PAD = 12
+
+    def __init__(self, master, command, value=1.0, width=330, height=40, bg="#f0f0f0"):
+        super().__init__(master, width=width, height=height, bg=bg, highlightthickness=0, cursor="hand2")
+        self.command = command
+        self.value = value
+        self.level = 0.0
+        self.muted = False
+        self.bind("<Button-1>", self._drag)
+        self.bind("<B1-Motion>", self._drag)
+        self.bind("<Configure>", lambda e: self.redraw())
+        self.redraw()
+
+    def _size(self):
+        w, h = self.winfo_width(), self.winfo_height()
+        if w <= 1:
+            w = int(self.cget("width"))
+        if h <= 1:
+            h = int(self.cget("height"))
+        return w, h
+
+    def set_state(self, value, level, muted):
+        level = round(level, 3)
+        if (value, level, muted) != (self.value, self.level, self.muted):
+            self.value, self.level, self.muted = value, level, muted
+            self.redraw()
+
+    def _drag(self, e):
+        w, _ = self._size()
+        span = w - 2 * self.PAD
+        if span <= 0:
+            return
+        v = round(min(1.0, max(0.0, (e.x - self.PAD) / span)) * 100) / 100
+        if v != self.value:
+            self.value = v
+            self.redraw()
+            self.command(v)
+
+    def redraw(self):
+        self.delete("all")
+        w, h = self._size()
+        left, right, cy, th = self.PAD, w - self.PAD, h / 2, 8
+        span = right - left
+        self.create_rectangle(left, cy - th / 2, right, cy + th / 2, fill="#141C29", outline="#1F2A3B")
+        if not self.muted and self.level > 0:
+            col = RED if self.level > 0.9 else AMBER if self.level > 0.7 else CYAN
+            self.create_rectangle(left, cy - th / 2, left + span * self.level, cy + th / 2, fill=col, outline="")
+        x = left + span * self.value
+        if not self.muted and self.value > 0:
+            self.create_line(left, cy, x, cy, fill=CYAN, width=2)
+        body = GREY if self.muted else CYAN
+        shine = "#9AA1AC" if self.muted else "#B8F7FF"
+        for hw, hh, col in ((9, 14, body), (4, 7, shine)):
+            self.create_polygon(x, cy - hh, x + hw, cy - hh * 0.55, x + hw, cy + hh * 0.55,
+                                x, cy + hh, x - hw, cy + hh * 0.55, x - hw, cy - hh * 0.55,
+                                fill=col, outline="")
+
+
 # ----------------------------------------------------------------- GUI
 class App:
     def __init__(self, root):
@@ -201,9 +271,12 @@ class App:
                 cfg = json.load(f)
         except Exception:
             pass
-        self.gain = float(cfg.get("gain", 1.0))
+        self.gain = max(0.0, min(1.0, float(cfg.get("gain", 1.0))))  # 0-100%
         self.muted = False
         self.level = 0.0
+        self.shown = 0.0
+        self.streaming = False
+        self.active = False
         self.status = "Idle"
         self.stop = threading.Event()
         self.hotkey = cfg.get("hotkey", "ctrl+shift+m")
@@ -221,10 +294,10 @@ class App:
         self.ip_e.grid(row=1, column=0, **pad)
         self.port_e.grid(row=1, column=1, **pad)
 
-        self.con = ttk.Button(f, text="Connect", command=self.connect)
-        self.dis = ttk.Button(f, text="Disconnect", command=self.disconnect, state="disabled")
-        self.con.grid(row=2, column=0, sticky="ew", **pad)
-        self.dis.grid(row=2, column=1, sticky="ew", **pad)
+        self.btn = tk.Button(f, text="Connect", command=self.toggle, bg=CYAN, fg=INK_ON_CYAN,
+                             activebackground="#5CF1FF", activeforeground=INK_ON_CYAN, relief="flat", bd=0,
+                             font=("Segoe UI", 11, "bold"), cursor="hand2", pady=8)
+        self.btn.grid(row=2, column=0, columnspan=2, sticky="ew", **pad)
 
         ttk.Label(f, text="Output device (choose CABLE Input for a virtual mic)").grid(
             row=3, column=0, columnspan=2, sticky="w", **pad)
@@ -233,13 +306,14 @@ class App:
         self.devmap = {}
         self.load_devices(cfg.get("device"))
 
-        self.vol_label = ttk.Label(f, text=f"Volume {int(self.gain * 100)}%")
+        self.vol_label = ttk.Label(f, text=f"Volume {round(self.gain * 100)}%")
         self.vol_label.grid(row=5, column=0, columnspan=2, sticky="w", **pad)
-        self.vol = ttk.Scale(f, from_=0, to=3, value=self.gain, command=self.on_vol, length=330)
-        self.vol.grid(row=6, column=0, columnspan=2, **pad)
-
-        self.meter = ttk.Progressbar(f, maximum=100, length=330)
-        self.meter.grid(row=7, column=0, columnspan=2, **pad)
+        try:
+            bg = ttk.Style().lookup("TFrame", "background") or root.cget("bg")
+        except Exception:
+            bg = "#f0f0f0"
+        self.slider = LevelSlider(f, self.on_vol, self.gain, bg=bg)
+        self.slider.grid(row=6, column=0, columnspan=2, **pad)
 
         self.mute_btn = ttk.Button(f, text="Mute", command=self.toggle_mute)
         self.hk_btn = ttk.Button(f, command=self.capture_hotkey)
@@ -274,6 +348,12 @@ class App:
     def set_status(self, text):
         self.status = text
 
+    def toggle(self):
+        if self.active:
+            self.disconnect()
+        else:
+            self.connect()
+
     def connect(self):
         ip = self.ip.get().strip()
         try:
@@ -302,24 +382,34 @@ class App:
     def disconnect(self):
         self.stop.set()
         self.lock(False)
+        self.streaming = False
         self.level = 0.0
+        self.shown = 0.0
         self.status = "Disconnected"
 
     def lock(self, on):
-        self.con.config(state="disabled" if on else "normal")
-        self.dis.config(state="normal" if on else "disabled")
+        self.active = on
+        if on:
+            self.btn.config(text="Disconnect", bg=RED, fg="white", activebackground="#FF4D78", activeforeground="white")
+        else:
+            self.btn.config(text="Connect", bg=CYAN, fg=INK_ON_CYAN, activebackground="#5CF1FF",
+                            activeforeground=INK_ON_CYAN)
         for w in (self.ip_e, self.port_e):
             w.config(state="disabled" if on else "normal")
         self.dev.config(state="disabled" if on else "readonly")
 
     # -- controls
     def on_vol(self, v):
-        self.gain = float(v)
-        self.vol_label.config(text=f"Volume {int(self.gain * 100)}%")
+        self.gain = max(0.0, min(1.0, float(v)))
+        if self.gain > 0 and self.muted:
+            self.set_muted(False)
+
+    def set_muted(self, m):
+        self.muted = m
+        self.mute_btn.config(text="Unmute" if m else "Mute")
 
     def toggle_mute(self):
-        self.muted = not self.muted
-        self.mute_btn.config(text="Unmute" if self.muted else "Mute")
+        self.set_muted(not self.muted)
 
     def apply_hotkey(self, hk):
         self.hk_btn.config(text=f"Hotkey: {hk}" if keyboard else "Hotkey: unavailable")
@@ -354,9 +444,17 @@ class App:
 
     # -- housekeeping
     def poll(self):
-        self.meter["value"] = min(100, self.level * 100)
+        # the meter only shows sound while audio is really flowing and not muted; otherwise it falls to empty
+        target = self.level if (self.streaming and not self.muted) else 0.0
+        self.shown = max(target, self.shown * 0.8)
+        if self.shown < 0.01:
+            self.shown = 0.0
+        self.slider.set_state(0.0 if self.muted else self.gain, self.shown, self.muted)
+        txt = "Volume 0% (muted)" if self.muted else f"Volume {round(self.gain * 100)}%"
+        if self.vol_label.cget("text") != txt:
+            self.vol_label.config(text=txt)
         self.status_label.config(text=self.status)
-        self.root.after(60, self.poll)
+        self.root.after(40, self.poll)
 
     def save(self):
         try:
