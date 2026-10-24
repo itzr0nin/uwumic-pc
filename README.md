@@ -12,7 +12,14 @@ VB-Cable driver. You do not have to install it by hand: if it is missing, the ap
 4. notices the new device and selects "CABLE Input" for you.
 Windows always asks you to confirm a driver install, so that prompt cannot be skipped. If CABLE does not show up afterwards,
 restart Windows once. VB-Cable is donationware by VB-Audio: please consider supporting them (vb-audio.com/Cable).
-The driver itself is not bundled inside the app because it must be signed by its author and its licence requires an agreement
+The first time you open the app with no virtual microphone, it asks once ("Set it up now?") and does all of this by itself.
+Say no and it will not ask again; the install button stays available.
+
+**Optional - bundle the driver into your own build (no download):** download the official VB-Cable zip yourself
+(vb-audio.com/Cable), save it next to uwumic_client.py as `vbcable.zip`, then build (GitHub Actions and build_exe.bat both pick it
+up automatically). Keep that repo private and do not hand the exe to other people unless VB-Audio agrees to it.
+
+The driver itself is not bundled by default because it must be signed by its author and its licence requires an agreement
 for redistribution.
 
 ## Use

@@ -399,6 +399,7 @@ class App:
         self.active = False
         self.sink = None
         self.installing = False
+        self.setup_declined = bool(cfg.get("setup_declined", False))
         self.monitor_device = None  # speaker test is always off when the app starts
         self.status = "Idle"
         self.stop = threading.Event()
@@ -463,6 +464,8 @@ class App:
         self.apply_hotkey(self.hotkey)
         root.protocol("WM_DELETE_WINDOW", self.close)
         self.poll()
+        if self.needs_setup():
+            root.after(800, self.first_run_setup)
 
     # -- devices
     def load_devices(self, saved, saved_monitor=None):
@@ -527,13 +530,31 @@ class App:
         done.wait()
         return box["a"]
 
-    def install_cable(self):
+    def needs_setup(self):
+        """True when there is no virtual microphone yet and the user has not said no to the automatic setup."""
+        return (sys.platform == "win32" and not self.setup_declined
+                and not any(is_virtual(n) for n in self.devmap))
+
+    def first_run_setup(self):
+        if self.installing or self.active or any(is_virtual(n) for n in self.devmap):
+            return
+        if messagebox.askyesno(
+                "UwU Mic - first-time setup",
+                "UwU Mic needs a virtual microphone so your voice shows up as a microphone in Discord, games and "
+                "other apps.\n\nIt can set this up for you now (free VB-Cable driver). Windows will ask for "
+                "administrator permission and to confirm the driver.\n\nSet it up now?"):
+            self.install_cable(confirm=False)
+        else:
+            self.setup_declined = True
+            self.save()
+
+    def install_cable(self, confirm=True):
         if self.installing:
             return
         if self.active:
             messagebox.showinfo("UwU Mic", "Disconnect first, then install the virtual microphone.")
             return
-        if not messagebox.askyesno(
+        if confirm and not messagebox.askyesno(
                 "UwU Mic", "UwU Mic needs a virtual microphone to send your voice to apps and games.\n\n"
                 "This downloads VB-Cable (free, from the official site vb-audio.com), checks its digital signature "
                 "and starts its installer. Windows will ask for administrator permission and to confirm the driver.\n\n"
@@ -546,10 +567,15 @@ class App:
     def _install_worker(self):
         try:
             tmp = tempfile.mkdtemp(prefix="uwumic_")
-            self.status = "Downloading the virtual microphone driver ..."
-            zpath = download(VB_URL, os.path.join(tmp, "vbcable.zip"),
-                             lambda pct: setattr(self, "status",
-                                                 f"Downloading the virtual microphone driver ... {pct}%"))
+            bundled = resource("vbcable.zip")
+            if os.path.exists(bundled):
+                zpath = bundled
+                self.status = "Preparing the virtual microphone driver ..."
+            else:
+                self.status = "Downloading the virtual microphone driver ..."
+                zpath = download(VB_URL, os.path.join(tmp, "vbcable.zip"),
+                                 lambda pct: setattr(self, "status",
+                                                     f"Downloading the virtual microphone driver ... {pct}%"))
             exe = extract_setup(zpath, os.path.join(tmp, "x"))
             self.status = "Checking the installer's digital signature ..."
             sig, signer = check_signature(exe)
@@ -616,7 +642,7 @@ class App:
         if name not in self.devmap:
             if not any(is_virtual(n) for n in self.devmap):
                 if messagebox.askyesno("UwU Mic", "No virtual microphone is installed yet.\n\nInstall it now? (free, one click)"):
-                    self.install_cable()
+                    self.install_cable(confirm=False)
             else:
                 messagebox.showerror("UwU Mic", "No output device is selected. Choose \"CABLE Input\".")
             return
@@ -733,7 +759,7 @@ class App:
     def save(self):
         try:
             with open(CFG_PATH, "w", encoding="utf-8") as f:
-                json.dump({"ip": self.ip.get().strip(), "port": self.port.get(), "device": self.dev.get(), "monitor": self.mon_dev.get(),
+                json.dump({"ip": self.ip.get().strip(), "port": self.port.get(), "device": self.dev.get(), "monitor": self.mon_dev.get(), "setup_declined": self.setup_declined,
                            "gain": self.gain, "hotkey": self.hotkey}, f)
         except Exception:
             pass
