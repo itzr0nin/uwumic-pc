@@ -2,13 +2,22 @@
 
 Receives the phone's microphone and plays it into an audio device. Pair it with the UwU Mic phone app.
 
-## One-time setup: virtual microphone
-Install the free VB-Cable driver (vb-audio.com/Cable), then reboot.
-It creates "CABLE Input" (where this app plays) and "CABLE Output" (the microphone your apps pick).
+## Virtual microphone (one click, inside the app)
+Apps like Discord and games need a "microphone" device. Windows has no built-in way to make one, so UwU Mic uses the free
+VB-Cable driver. You do not have to install it by hand: if it is missing, the app shows **Install virtual microphone**
+(and offers it when you press Connect). It then:
+1. downloads VB-Cable from the official site (vb-audio.com),
+2. checks the installer's digital signature,
+3. starts the installer with administrator permission (Windows shows its normal permission prompt),
+4. notices the new device and selects "CABLE Input" for you.
+Windows always asks you to confirm a driver install, so that prompt cannot be skipped. If CABLE does not show up afterwards,
+restart Windows once. VB-Cable is donationware by VB-Audio: please consider supporting them (vb-audio.com/Cable).
+The driver itself is not bundled inside the app because it must be signed by its author and its licence requires an agreement
+for redistribution.
 
 ## Use
 1. Phone: open UwU Mic and tap Start. Note the IP and port it shows.
-2. PC: open UwUMicClient.exe, type the phone's IP and port, choose "CABLE Input" as the output device.
+2. PC: open UwUMicClient.exe, type the phone's IP and port (the output is set to "CABLE Input" for you).
 3. Press Connect. In Discord/OBS/games choose "CABLE Output" as the microphone.
 **Play on speaker (test):** off by default. Tick it to also hear the received voice on a speaker or headphones
 (pick which one in the list under the box) while the other apps still get the voice through CABLE. Untick to stop.

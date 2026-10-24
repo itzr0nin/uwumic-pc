@@ -8,9 +8,14 @@ into the output device you choose. Pick "CABLE Input" (VB-Cable) and then select
 import json
 import os
 import socket
-import sys
 import struct
+import subprocess
+import sys
+import tempfile
 import threading
+import time
+import urllib.request
+import zipfile
 import tkinter as tk
 from tkinter import ttk, messagebox
 
@@ -225,6 +230,72 @@ def stream(host, port, stop, make_sink, status):
                 pass
 
 
+# ----------------------------------------------------------------- virtual microphone installer
+VB_URL = "https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack43.zip"
+
+
+def download(url, dest, progress=None, timeout=30, min_size=100_000):
+    """Download url to dest (HTTPS), reporting percent via progress(pct)."""
+    req = urllib.request.Request(url, headers={"User-Agent": "UwUMic/1.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as r, open(dest, "wb") as f:
+        total = int(r.headers.get("Content-Length") or 0)
+        got = 0
+        while True:
+            chunk = r.read(65536)
+            if not chunk:
+                break
+            f.write(chunk)
+            got += len(chunk)
+            if progress and total:
+                progress(min(100, got * 100 // total))
+    if os.path.getsize(dest) < min_size:
+        raise ValueError("the download looks incomplete")
+    return dest
+
+
+def extract_setup(zip_path, outdir):
+    """Unzip the driver pack and return the path of the right setup program for this Windows."""
+    with zipfile.ZipFile(zip_path) as z:
+        z.extractall(outdir)
+    arch = (os.environ.get("PROCESSOR_ARCHITEW6432") or os.environ.get("PROCESSOR_ARCHITECTURE") or "").upper()
+    want = "vbcable_setup_x64.exe" if "64" in arch else "vbcable_setup.exe"
+    for folder, _, files in os.walk(outdir):
+        for name in files:
+            if name.lower() == want:
+                return os.path.join(folder, name)
+    raise FileNotFoundError("the driver pack does not contain " + want)
+
+
+def parse_signature(output):
+    lines = [ln.strip() for ln in (output or "").strip().splitlines() if ln.strip()]
+    return (lines[0] if lines else ""), (lines[1] if len(lines) > 1 else "")
+
+
+def check_signature(path):
+    """Ask Windows whether the file carries a valid digital signature. Returns (status, signer)."""
+    env = dict(os.environ, UWU_FILE=path)
+    cmd = ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+           "$s = Get-AuthenticodeSignature -LiteralPath $env:UWU_FILE; $s.Status; "
+           "if ($s.SignerCertificate) { $s.SignerCertificate.Subject }"]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    return parse_signature(r.stdout)
+
+
+def run_elevated(exe, args):
+    """Start a program with administrator rights (Windows shows its permission prompt)."""
+    import ctypes
+    rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, args, os.path.dirname(exe), 1)
+    return rc > 32
+
+
+def refresh_audio_devices():
+    """Make PortAudio notice newly installed devices (only safe while no stream is open)."""
+    import sounddevice as sd
+    sd._terminate()
+    sd._initialize()
+
+
 def is_virtual(name):
     """True for virtual-cable style outputs (VB-Cable, VoiceMeeter, ...) that make no sound on speakers."""
     n = (name or "").lower()
@@ -327,6 +398,7 @@ class App:
         self.streaming = False
         self.active = False
         self.sink = None
+        self.installing = False
         self.monitor_device = None  # speaker test is always off when the app starts
         self.status = "Idle"
         self.stop = threading.Event()
@@ -357,33 +429,36 @@ class App:
         self.dev.bind("<<ComboboxSelected>>", lambda e: self.update_route())
         self.route_label = ttk.Label(f, text="", wraplength=340)
         self.route_label.grid(row=5, column=0, columnspan=2, sticky="w", **pad)
+        self.install_btn = ttk.Button(f, text="Install virtual microphone (free, one click)",
+                                      command=self.install_cable)
+        self.install_btn.grid(row=6, column=0, columnspan=2, sticky="ew", **pad)
         self.mon_var = tk.BooleanVar(value=False)
         self.mon_chk = ttk.Checkbutton(f, text="Play on speaker (test) - use headphones to avoid echo",
                                        variable=self.mon_var, command=self.on_monitor)
-        self.mon_chk.grid(row=6, column=0, columnspan=2, sticky="w", **pad)
+        self.mon_chk.grid(row=7, column=0, columnspan=2, sticky="w", **pad)
         self.mon_dev = ttk.Combobox(f, state="readonly", width=48)
-        self.mon_dev.grid(row=7, column=0, columnspan=2, **pad)
+        self.mon_dev.grid(row=8, column=0, columnspan=2, **pad)
         self.mon_dev.bind("<<ComboboxSelected>>", lambda e: self.on_monitor())
         self.devmap = {}
         self.load_devices(cfg.get("device"), cfg.get("monitor"))
         self.update_route()
 
         self.vol_label = ttk.Label(f, text=f"Volume {round(self.gain * 100)}%")
-        self.vol_label.grid(row=8, column=0, columnspan=2, sticky="w", **pad)
+        self.vol_label.grid(row=9, column=0, columnspan=2, sticky="w", **pad)
         try:
             bg = ttk.Style().lookup("TFrame", "background") or root.cget("bg")
         except Exception:
             bg = "#f0f0f0"
         self.slider = LevelSlider(f, self.on_vol, self.gain, bg=bg)
-        self.slider.grid(row=9, column=0, columnspan=2, **pad)
+        self.slider.grid(row=10, column=0, columnspan=2, **pad)
 
         self.mute_btn = ttk.Button(f, text="Mute", command=self.toggle_mute)
         self.hk_btn = ttk.Button(f, command=self.capture_hotkey)
-        self.mute_btn.grid(row=10, column=0, sticky="ew", **pad)
-        self.hk_btn.grid(row=10, column=1, sticky="ew", **pad)
+        self.mute_btn.grid(row=11, column=0, sticky="ew", **pad)
+        self.hk_btn.grid(row=11, column=1, sticky="ew", **pad)
 
         self.status_label = ttk.Label(f, text="Idle", foreground="gray", wraplength=340)
-        self.status_label.grid(row=11, column=0, columnspan=2, sticky="w", **pad)
+        self.status_label.grid(row=12, column=0, columnspan=2, sticky="w", **pad)
 
         self.apply_hotkey(self.hotkey)
         root.protocol("WM_DELETE_WINDOW", self.close)
@@ -406,7 +481,7 @@ class App:
             pick = cable[0] if cable else ""   # never default to your speakers
         self.dev.set(pick)
         if not pick:
-            self.status = "VB-Cable not found: install it (vb-audio.com/Cable), restart this app, choose CABLE Input"
+            self.status = "No virtual microphone found - click Install virtual microphone"
 
         self.mon_dev["values"] = names
         mon = saved_monitor if saved_monitor in self.devmap else None
@@ -424,8 +499,13 @@ class App:
 
     def update_route(self):
         name = self.dev.get()
+        has_cable = any(is_virtual(n) for n in self.devmap)
+        if has_cable:
+            self.install_btn.grid_remove()
+        else:
+            self.install_btn.grid()
         if name not in self.devmap:
-            self.route_label.config(text="No output selected. Install VB-Cable and choose CABLE Input.",
+            self.route_label.config(text="No virtual microphone found. Click the button below to install it.",
                                     foreground="#c05a00")
         elif is_virtual(name):
             self.route_label.config(text="Virtual cable: apps get your voice, nothing plays on your speakers.",
@@ -433,6 +513,84 @@ class App:
         else:
             self.route_label.config(text="This is a normal speaker: you will hear the voice and apps can't use it "
                                          "as a mic. Choose CABLE Input.", foreground="#c05a00")
+
+    # -- virtual microphone install
+    def ask_main(self, title, msg):
+        """Ask a yes/no question on the window thread while a worker thread waits for the answer."""
+        box, done = {}, threading.Event()
+
+        def run():
+            box["a"] = messagebox.askyesno(title, msg)
+            done.set()
+
+        self.root.after(0, run)
+        done.wait()
+        return box["a"]
+
+    def install_cable(self):
+        if self.installing:
+            return
+        if self.active:
+            messagebox.showinfo("UwU Mic", "Disconnect first, then install the virtual microphone.")
+            return
+        if not messagebox.askyesno(
+                "UwU Mic", "UwU Mic needs a virtual microphone to send your voice to apps and games.\n\n"
+                "This downloads VB-Cable (free, from the official site vb-audio.com), checks its digital signature "
+                "and starts its installer. Windows will ask for administrator permission and to confirm the driver.\n\n"
+                "VB-Cable is donationware: please consider supporting VB-Audio.\n\nContinue?"):
+            return
+        self.installing = True
+        self.install_btn.config(state="disabled")
+        threading.Thread(target=self._install_worker, daemon=True).start()
+
+    def _install_worker(self):
+        try:
+            tmp = tempfile.mkdtemp(prefix="uwumic_")
+            self.status = "Downloading the virtual microphone driver ..."
+            zpath = download(VB_URL, os.path.join(tmp, "vbcable.zip"),
+                             lambda pct: setattr(self, "status",
+                                                 f"Downloading the virtual microphone driver ... {pct}%"))
+            exe = extract_setup(zpath, os.path.join(tmp, "x"))
+            self.status = "Checking the installer's digital signature ..."
+            sig, signer = check_signature(exe)
+            known = "vb-audio" in signer.lower() or "burel" in signer.lower()
+            if sig != "Valid":
+                if not self.ask_main("UwU Mic", f"Windows could not verify the installer's signature ({sig or 'unknown'})."
+                                     "\n\nOnly continue if you trust this download.\n\nInstall anyway?"):
+                    self.status = "Install cancelled"
+                    return
+            elif not known:
+                if not self.ask_main("UwU Mic", f"The installer is signed by:\n{signer}\n\nThat is not the name "
+                                     "I expected (VB-Audio).\n\nInstall anyway?"):
+                    self.status = "Install cancelled"
+                    return
+            self.status = "Starting the installer - allow it in the Windows prompts ..."
+            if not run_elevated(exe, "-i -h"):
+                self.status = "The installer was not started (administrator permission was refused)."
+                return
+            self.status = "Installing - confirm the driver in the Windows window if it asks ..."
+            for _ in range(60):
+                time.sleep(2)
+                try:
+                    refresh_audio_devices()
+                    found = any("CABLE Input" in n for _, n in output_devices())
+                except Exception:
+                    found = False
+                if found:
+                    self.root.after(0, self.after_install)
+                    return
+            self.status = ("The driver may need a restart: restart Windows once (VB-Cable asks for it), "
+                           "then open UwU Mic again.")
+        except Exception as e:
+            self.status = f"Install failed: {e}"
+        finally:
+            self.installing = False
+            self.root.after(0, lambda: self.install_btn.config(state="normal"))
+
+    def after_install(self):
+        self.load_devices(None, self.mon_dev.get())
+        self.update_route()
+        self.status = "Virtual microphone installed. In Discord or your game, choose CABLE Output as the microphone."
 
     # -- connection
     def set_status(self, text):
@@ -456,8 +614,11 @@ class App:
             return
         name = self.dev.get()
         if name not in self.devmap:
-            messagebox.showerror("UwU Mic", "No output device is selected.\n\nInstall the free VB-Cable driver "
-                                 "(vb-audio.com/Cable), restart this app and choose \"CABLE Input\".")
+            if not any(is_virtual(n) for n in self.devmap):
+                if messagebox.askyesno("UwU Mic", "No virtual microphone is installed yet.\n\nInstall it now? (free, one click)"):
+                    self.install_cable()
+            else:
+                messagebox.showerror("UwU Mic", "No output device is selected. Choose \"CABLE Input\".")
             return
         if not is_virtual(name) and not messagebox.askyesno(
                 "UwU Mic", "This output is a normal speaker/headphone device.\n\nYou will hear the received voice, "
