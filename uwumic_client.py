@@ -536,19 +536,13 @@ class App:
                 and not any(is_virtual(n) for n in self.devmap))
 
     def first_run_setup(self):
+        """Runs by itself on the first launch: no question from this app (Windows still shows its own prompts)."""
         if self.installing or self.active or any(is_virtual(n) for n in self.devmap):
             return
-        if messagebox.askyesno(
-                "UwU Mic - first-time setup",
-                "UwU Mic needs a virtual microphone so your voice shows up as a microphone in Discord, games and "
-                "other apps.\n\nIt can set this up for you now (free VB-Cable driver). Windows will ask for "
-                "administrator permission and to confirm the driver.\n\nSet it up now?"):
-            self.install_cable(confirm=False)
-        else:
-            self.setup_declined = True
-            self.save()
+        self.status = "Setting up your virtual microphone - allow the Windows prompts ..."
+        self.install_cable(confirm=False, auto=True)
 
-    def install_cable(self, confirm=True):
+    def install_cable(self, confirm=True, auto=False):
         if self.installing:
             return
         if self.active:
@@ -562,9 +556,9 @@ class App:
             return
         self.installing = True
         self.install_btn.config(state="disabled")
-        threading.Thread(target=self._install_worker, daemon=True).start()
+        threading.Thread(target=self._install_worker, kwargs={"auto": auto}, daemon=True).start()
 
-    def _install_worker(self):
+    def _install_worker(self, auto=False):
         try:
             tmp = tempfile.mkdtemp(prefix="uwumic_")
             bundled = resource("vbcable.zip")
@@ -580,6 +574,10 @@ class App:
             self.status = "Checking the installer's digital signature ..."
             sig, signer = check_signature(exe)
             known = "vb-audio" in signer.lower() or "burel" in signer.lower()
+            if auto and not (sig == "Valid" and known):
+                self.status = ("Automatic setup stopped: the installer's signature could not be verified. "
+                               "Click \"Install virtual microphone\" to review it yourself.")
+                return
             if sig != "Valid":
                 if not self.ask_main("UwU Mic", f"Windows could not verify the installer's signature ({sig or 'unknown'})."
                                      "\n\nOnly continue if you trust this download.\n\nInstall anyway?"):
@@ -593,6 +591,9 @@ class App:
             self.status = "Starting the installer - allow it in the Windows prompts ..."
             if not run_elevated(exe, "-i -h"):
                 self.status = "The installer was not started (administrator permission was refused)."
+                if auto:
+                    self.setup_declined = True        # do not show the Windows prompt on every launch
+                    self.root.after(0, self.save)
                 return
             self.status = "Installing - confirm the driver in the Windows window if it asks ..."
             for _ in range(60):
@@ -641,8 +642,8 @@ class App:
         name = self.dev.get()
         if name not in self.devmap:
             if not any(is_virtual(n) for n in self.devmap):
-                if messagebox.askyesno("UwU Mic", "No virtual microphone is installed yet.\n\nInstall it now? (free, one click)"):
-                    self.install_cable(confirm=False)
+                self.status = "Setting up the virtual microphone first - press Connect again when it is ready."
+                self.install_cable(confirm=False, auto=True)
             else:
                 messagebox.showerror("UwU Mic", "No output device is selected. Choose \"CABLE Input\".")
             return
