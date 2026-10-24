@@ -16,7 +16,9 @@ The first time you open the app with no virtual microphone, it does all of this 
 Only Windows' own prompts appear: the administrator permission (UAC) and the driver confirmation. In the driver window you can
 tick "Always trust software from VB-Audio Software" so Windows never asks about it again.
 If the signature cannot be verified, automatic mode stops without installing; the install button lets you review and decide.
-If you refuse Windows' permission prompt, the app remembers and does not show it again on every launch.
+The app tries the automatic setup on up to 3 launches; after that it stops by itself and the install button remains.
+If something goes wrong, the reason is shown at the bottom of the window and every step is written to
+`%APPDATA%\\UwUMicClient.log` (open it with Win+R, paste `%APPDATA%\\UwUMicClient.log`). Send that file when asking for help.
 
 **Optional - bundle the driver into your own build (no download):** download the official VB-Cable zip yourself
 (vb-audio.com/Cable), save it next to uwumic_client.py as `vbcable.zip`, then build (GitHub Actions and build_exe.bat both pick it

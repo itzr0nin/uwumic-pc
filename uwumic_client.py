@@ -5,6 +5,7 @@ Enter the phone's IP and port, press Connect, and the phone's microphone is play
 into the output device you choose. Pick "CABLE Input" (VB-Cable) and then select
 "CABLE Output" as the microphone in Discord, OBS, games, etc.
 """
+import datetime
 import json
 import os
 import socket
@@ -14,6 +15,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import urllib.request
 import zipfile
 import tkinter as tk
@@ -231,7 +233,25 @@ def stream(host, port, stop, make_sink, status):
 
 
 # ----------------------------------------------------------------- virtual microphone installer
-VB_URL = "https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack43.zip"
+VB_URLS = [
+    "https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip",   # current package (Oct 2024)
+    "https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack43.zip",   # old package, fallback only
+]
+VB_URL = VB_URLS[0]
+AUTO_SETUP_TRIES = 3   # automatic setups attempted on startup before the app stops trying on its own
+
+
+def log_path():
+    return os.path.join(os.path.dirname(CFG_PATH), "UwUMicClient.log")
+
+
+def log(msg):
+    """Append a line to UwUMicClient.log (next to the settings file) so a failed setup can be diagnosed."""
+    try:
+        with open(log_path(), "a", encoding="utf-8") as f:
+            f.write(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S ") + str(msg) + "\n")
+    except Exception:
+        pass
 
 
 def download(url, dest, progress=None, timeout=30, min_size=100_000):
@@ -253,17 +273,35 @@ def download(url, dest, progress=None, timeout=30, min_size=100_000):
     return dest
 
 
+def pick_setup(paths, arch):
+    """Choose the right VB-Cable setup program for this Windows from the unpacked file list."""
+    exes = [p for p in paths if p.lower().endswith(".exe") and "setup" in os.path.basename(p).lower()]
+    name = lambda p: os.path.basename(p).lower()
+    arch = (arch or "").upper()
+    if "ARM64" in arch:
+        prefs = [lambda n: "arm64" in n, lambda n: "x64" in n]
+    elif "64" in arch:
+        prefs = [lambda n: "x64" in n and "arm" not in n]
+    else:
+        prefs = [lambda n: "x64" not in n and "arm" not in n]
+    for pref in prefs:
+        for p in exes:
+            if pref(name(p)):
+                return p
+    if exes:
+        return exes[0]
+    raise FileNotFoundError("no setup program in the driver pack (found: "
+                            + ", ".join(sorted(os.path.basename(p) for p in paths)[:20]) + ")")
+
+
 def extract_setup(zip_path, outdir):
     """Unzip the driver pack and return the path of the right setup program for this Windows."""
     with zipfile.ZipFile(zip_path) as z:
         z.extractall(outdir)
-    arch = (os.environ.get("PROCESSOR_ARCHITEW6432") or os.environ.get("PROCESSOR_ARCHITECTURE") or "").upper()
-    want = "vbcable_setup_x64.exe" if "64" in arch else "vbcable_setup.exe"
-    for folder, _, files in os.walk(outdir):
-        for name in files:
-            if name.lower() == want:
-                return os.path.join(folder, name)
-    raise FileNotFoundError("the driver pack does not contain " + want)
+    arch = os.environ.get("PROCESSOR_ARCHITEW6432") or os.environ.get("PROCESSOR_ARCHITECTURE") or ""
+    paths = [os.path.join(folder, n) for folder, _, files in os.walk(outdir) for n in files]
+    log("driver pack contains: " + ", ".join(sorted(os.path.basename(p) for p in paths)))
+    return pick_setup(paths, arch)
 
 
 def parse_signature(output):
@@ -277,7 +315,7 @@ def check_signature(path):
     cmd = ["powershell", "-NoProfile", "-NonInteractive", "-Command",
            "$s = Get-AuthenticodeSignature -LiteralPath $env:UWU_FILE; $s.Status; "
            "if ($s.SignerCertificate) { $s.SignerCertificate.Subject }"]
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env,
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env, stdin=subprocess.DEVNULL,
                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     return parse_signature(r.stdout)
 
@@ -399,7 +437,7 @@ class App:
         self.active = False
         self.sink = None
         self.installing = False
-        self.setup_declined = bool(cfg.get("setup_declined", False))
+        self.setup_tries = int(cfg.get("setup_tries", 0))
         self.monitor_device = None  # speaker test is always off when the app starts
         self.status = "Idle"
         self.stop = threading.Event()
@@ -532,13 +570,16 @@ class App:
 
     def needs_setup(self):
         """True when there is no virtual microphone yet and the user has not said no to the automatic setup."""
-        return (sys.platform == "win32" and not self.setup_declined
+        return (sys.platform == "win32" and self.setup_tries < AUTO_SETUP_TRIES
                 and not any(is_virtual(n) for n in self.devmap))
 
     def first_run_setup(self):
         """Runs by itself on the first launch: no question from this app (Windows still shows its own prompts)."""
         if self.installing or self.active or any(is_virtual(n) for n in self.devmap):
             return
+        self.setup_tries += 1
+        self.save()
+        log(f"first-run setup, attempt {self.setup_tries} of {AUTO_SETUP_TRIES}")
         self.status = "Setting up your virtual microphone - allow the Windows prompts ..."
         self.install_cable(confirm=False, auto=True)
 
@@ -560,23 +601,38 @@ class App:
 
     def _install_worker(self, auto=False):
         try:
+            log(f"install started (auto={auto})")
             tmp = tempfile.mkdtemp(prefix="uwumic_")
             bundled = resource("vbcable.zip")
             if os.path.exists(bundled):
                 zpath = bundled
+                log("using the driver pack bundled in the app")
                 self.status = "Preparing the virtual microphone driver ..."
             else:
-                self.status = "Downloading the virtual microphone driver ..."
-                zpath = download(VB_URL, os.path.join(tmp, "vbcable.zip"),
-                                 lambda pct: setattr(self, "status",
-                                                     f"Downloading the virtual microphone driver ... {pct}%"))
+                zpath, last = None, None
+                for url in VB_URLS:
+                    try:
+                        log("downloading " + url)
+                        self.status = "Downloading the virtual microphone driver ..."
+                        zpath = download(url, os.path.join(tmp, "vbcable.zip"),
+                                         lambda pct: setattr(self, "status",
+                                                             f"Downloading the virtual microphone driver ... {pct}%"))
+                        log(f"downloaded {os.path.getsize(zpath)} bytes")
+                        break
+                    except Exception as e:
+                        last = e
+                        log(f"download failed: {e!r}")
+                if zpath is None:
+                    raise last
             exe = extract_setup(zpath, os.path.join(tmp, "x"))
+            log("installer: " + exe)
             self.status = "Checking the installer's digital signature ..."
             sig, signer = check_signature(exe)
+            log(f"signature: {sig} / {signer}")
             known = "vb-audio" in signer.lower() or "burel" in signer.lower()
             if auto and not (sig == "Valid" and known):
-                self.status = ("Automatic setup stopped: the installer's signature could not be verified. "
-                               "Click \"Install virtual microphone\" to review it yourself.")
+                self.status = ("Automatic setup stopped: the installer's signature could not be verified "
+                               f"({sig or 'unknown'}). Click \"Install virtual microphone\" to review it yourself.")
                 return
             if sig != "Valid":
                 if not self.ask_main("UwU Mic", f"Windows could not verify the installer's signature ({sig or 'unknown'})."
@@ -590,31 +646,36 @@ class App:
                     return
             self.status = "Starting the installer - allow it in the Windows prompts ..."
             if not run_elevated(exe, "-i -h"):
+                log("run_elevated returned failure (permission refused or blocked)")
                 self.status = "The installer was not started (administrator permission was refused)."
-                if auto:
-                    self.setup_declined = True        # do not show the Windows prompt on every launch
-                    self.root.after(0, self.save)
                 return
+            log("installer started, waiting for CABLE Input to appear")
             self.status = "Installing - confirm the driver in the Windows window if it asks ..."
-            for _ in range(60):
+            for _ in range(90):
                 time.sleep(2)
                 try:
                     refresh_audio_devices()
                     found = any("CABLE Input" in n for _, n in output_devices())
-                except Exception:
+                except Exception as e:
+                    log(f"device refresh failed: {e!r}")
                     found = False
                 if found:
+                    log("CABLE Input found")
                     self.root.after(0, self.after_install)
                     return
+            log("CABLE Input never appeared")
             self.status = ("The driver may need a restart: restart Windows once (VB-Cable asks for it), "
                            "then open UwU Mic again.")
         except Exception as e:
-            self.status = f"Install failed: {e}"
+            log("install failed: " + traceback.format_exc())
+            self.status = f"Install failed: {e}  (details: {log_path()})"
         finally:
             self.installing = False
             self.root.after(0, lambda: self.install_btn.config(state="normal"))
 
     def after_install(self):
+        self.setup_tries = 0
+        self.save()
         self.load_devices(None, self.mon_dev.get())
         self.update_route()
         self.status = "Virtual microphone installed. In Discord or your game, choose CABLE Output as the microphone."
@@ -760,7 +821,7 @@ class App:
     def save(self):
         try:
             with open(CFG_PATH, "w", encoding="utf-8") as f:
-                json.dump({"ip": self.ip.get().strip(), "port": self.port.get(), "device": self.dev.get(), "monitor": self.mon_dev.get(), "setup_declined": self.setup_declined,
+                json.dump({"ip": self.ip.get().strip(), "port": self.port.get(), "device": self.dev.get(), "monitor": self.mon_dev.get(), "setup_tries": self.setup_tries,
                            "gain": self.gain, "hotkey": self.hotkey}, f)
         except Exception:
             pass
