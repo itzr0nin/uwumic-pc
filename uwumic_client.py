@@ -75,6 +75,108 @@ class Jitter:
             return out
 
 
+class NoiseCanceller:
+    """RNNoise: a small neural network that removes background noise from a voice.
+    Works on the 48 kHz mono 16-bit audio the phone sends, in chunks of any size."""
+
+    FRAME = 480  # 10 ms at 48 kHz, what RNNoise processes at a time
+
+    def __init__(self):
+        import numpy as np
+        from pyrnnoise import RNNoise
+
+        self.np = np
+        self.rn = RNNoise(sample_rate=48000)
+        self.buf = bytearray()
+        self.call = None  # how this version of pyrnnoise wants to be called, found on first use
+
+    def reset(self):
+        self.buf.clear()
+
+    def _tidy(self, audio):
+        np = self.np
+        a = np.asarray(audio).reshape(-1)
+        if a.size != self.FRAME:
+            raise ValueError(f"unexpected frame size {a.size}")
+        if a.dtype.kind == "f" and float(np.max(np.abs(a))) <= 1.5:
+            a = a * 32768.0
+        return np.clip(a, -32768, 32767).astype("<i2")
+
+    def _parse(self, r):
+        if isinstance(r, tuple) and len(r) == 2:
+            return self._tidy(r[1])
+        if isinstance(r, list) and r:  # denoise_chunk yields (speech probability, frame)
+            return self._tidy(self.np.concatenate([self.np.asarray(x[1]).reshape(-1) for x in r]))
+        raise ValueError("unexpected result from RNNoise")
+
+    def _frame(self, frame):
+        if self.call is None:
+            tried = []
+            for name, fn in (("frame-1d", lambda f: self.rn.denoise_frame(f)),
+                             ("frame-2d", lambda f: self.rn.denoise_frame(f.reshape(1, -1))),
+                             ("chunk", lambda f: list(self.rn.denoise_chunk(f.reshape(1, -1))))):
+                try:
+                    out = self._parse(fn(frame))
+                except Exception as e:
+                    tried.append(f"{name}: {e}")
+                    continue
+                self.call = fn
+                log("RNNoise call style: " + name)
+                return out.tobytes()
+            raise RuntimeError("could not use pyrnnoise (" + "; ".join(tried) + ")")
+        return self._parse(self.call(frame)).tobytes()
+
+    def process(self, data):
+        """data = PCM16 little-endian mono bytes. Returns cleaned bytes (a few ms behind the input)."""
+        self.buf += data
+        step = self.FRAME * 2
+        n = len(self.buf) // step
+        if n == 0:
+            return b""
+        np = self.np
+        arr = np.frombuffer(bytes(self.buf[: n * step]), dtype="<i2")
+        del self.buf[: n * step]
+        return b"".join(self._frame(arr[k * self.FRAME:(k + 1) * self.FRAME].copy()) for k in range(n))
+
+
+def run_selftest(path):
+    """UwUMicClient.exe --selftest out.txt : checks that noise cancellation really works in this build."""
+    lines, code = [], 1
+    try:
+        import numpy as np
+        try:
+            import importlib.metadata as md
+            lines.append("pyrnnoise " + md.version("pyrnnoise"))
+        except Exception:
+            pass
+        nc = NoiseCanceller()
+        rng = np.random.default_rng(1)
+        noise = rng.normal(0, 600, 96000).clip(-32768, 32767).astype("<i2")  # 2 s of steady noise
+        raw = noise.tobytes()
+        out = b"".join(nc.process(raw[i:i + 1920]) for i in range(0, len(raw), 1920))
+        o = np.frombuffer(out, dtype="<i2").astype(np.float64)
+        n = noise.astype(np.float64)
+        in_rms = float(np.sqrt(np.mean(n[len(n) // 2:] ** 2)))
+        out_rms = float(np.sqrt(np.mean(o[len(o) // 2:] ** 2))) + 1e-9
+        drop = 20 * np.log10(in_rms / out_rms)
+        lines.append(f"call style: {getattr(nc.call, '__name__', 'detected')}; samples in {len(n)} out {len(o)}")
+        lines.append(f"steady noise reduced by {drop:.1f} dB")
+        if len(out) == len(raw) and drop >= 6:
+            lines.append("RESULT: OK")
+            code = 0
+        else:
+            lines.append("RESULT: FAILED (output length or noise reduction is wrong)")
+    except Exception:
+        lines.append("RESULT: FAILED")
+        lines.append(traceback.format_exc())
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+    except Exception:
+        pass
+    return code
+
+
 class _Out:
     """One Windows output stream fed from its own jitter buffer, with volume and mute applied."""
 
@@ -138,6 +240,7 @@ class AudioSink:
         self.rate = rate
         self.device = device
         self.mon = None
+        self.nc = None
         self.main = _Out(rate, device, app, True)
         app.streaming = True
         app.sink = self
@@ -160,6 +263,25 @@ class AudioSink:
             self.app.status = f"Speaker error: {e}"
 
     def push(self, data):
+        app = self.app
+        if app.noise_cancel and not app.nc_error:
+            if self.nc is None:
+                try:
+                    self.nc = NoiseCanceller()
+                except Exception as e:
+                    app.nc_error = str(e)[:120]
+                    log("noise cancellation unavailable: " + traceback.format_exc())
+            if self.nc is not None:
+                try:
+                    data = self.nc.process(data)
+                except Exception as e:
+                    app.nc_error = str(e)[:120]
+                    log("noise cancellation failed: " + traceback.format_exc())
+                    self.nc = None
+        elif self.nc is not None:
+            self.nc.reset()
+        if not data:
+            return
         self.main.push(data)
         mon = self.mon
         if mon is not None:
@@ -476,6 +598,8 @@ class App:
         self.streaming = False
         self.active = False
         self.sink = None
+        self.noise_cancel = bool(cfg.get("noise_cancel", True))
+        self.nc_error = ""
         self.installing = False
         self.setup_tries = int(cfg.get("setup_tries", 0))
         self.monitor_device = None  # speaker test is always off when the app starts
@@ -501,6 +625,9 @@ class App:
                              font=("Segoe UI", 11, "bold"), cursor="hand2", pady=8)
         self.btn.grid(row=2, column=0, columnspan=2, sticky="ew", **pad)
 
+        self.nc_var = tk.BooleanVar(value=self.noise_cancel)
+        self.nc_chk = ttk.Checkbutton(f, text="Noise cancellation", variable=self.nc_var, command=self.on_noise)
+        self.nc_chk.grid(row=3, column=0, columnspan=2, sticky="w", **pad)
         self.mon_var = tk.BooleanVar(value=False)
         self.mon_chk = ttk.Checkbutton(f, text="Play on speaker (test) - use headphones to avoid echo",
                                        variable=self.mon_var, command=self.on_monitor)
@@ -701,6 +828,14 @@ class App:
         if self.gain > 0 and self.muted:
             self.set_muted(False)
 
+    def on_noise(self):
+        on = bool(self.nc_var.get())
+        self.noise_cancel = on
+        if on:
+            self.nc_error = ""  # try again if it failed before
+        self.status = "Noise cancellation ON" if on else "Noise cancellation OFF"
+        self.save()
+
     def on_monitor(self):
         on = bool(self.mon_var.get())
         device = pick_speaker(self.devs, default_output_index()) if on else None
@@ -764,6 +899,10 @@ class App:
 
     # -- housekeeping
     def poll(self):
+        if self.nc_error and self.noise_cancel:  # the noise remover could not start: fall back to plain audio
+            self.noise_cancel = False
+            self.nc_var.set(False)
+            self.status = f"Noise cancellation unavailable ({self.nc_error}) - sending plain audio"
         # the meter only shows sound while audio is really flowing and not muted; otherwise it falls to empty
         target = self.level if (self.streaming and not self.muted) else 0.0
         self.shown = max(target, self.shown * 0.8)
@@ -779,7 +918,7 @@ class App:
     def save(self):
         try:
             with open(CFG_PATH, "w", encoding="utf-8") as f:
-                json.dump({"ip": self.ip.get().strip(), "port": self.port.get(), "setup_tries": self.setup_tries,
+                json.dump({"ip": self.ip.get().strip(), "port": self.port.get(), "setup_tries": self.setup_tries, "noise_cancel": self.noise_cancel,
                            "gain": self.gain, "hotkey": self.hotkey}, f)
         except Exception:
             pass
@@ -791,6 +930,10 @@ class App:
 
 
 def main():
+    if "--selftest" in sys.argv:
+        i = sys.argv.index("--selftest")
+        path = sys.argv[i + 1] if len(sys.argv) > i + 1 else os.path.join(os.path.dirname(CFG_PATH), "UwUMicSelfTest.txt")
+        sys.exit(run_selftest(path))
     root = tk.Tk()
     App(root)
     root.mainloop()

@@ -22,6 +22,15 @@ up automatically). Keep that repo private and do not hand the exe to other peopl
 The driver itself is not bundled by default because it must be signed by its author and its licence requires an agreement
 for redistribution.
 
+## Noise cancellation (RNNoise)
+The **Noise cancellation** checkbox (on by default) runs the received voice through RNNoise, a small neural network made to
+remove background noise (fans, hiss, room noise, a lot of keyboard clatter) from speech. It runs on the PC, so every phone behaves
+the same and the phone stays cool. Tick **Play on speaker (test)** and switch noise cancellation on and off to hear the difference.
+It is tuned for voices: it can make music or whistling sound odd, and it will not remove every click while you are talking.
+If it cannot start (for example on Windows on ARM), the box unticks itself, the status says why, and your voice keeps working unprocessed.
+The GitHub build also tests it inside the finished exe (`UwUMicClient.exe --selftest result.txt`): look at the "Self-test noise
+cancellation" step of the build, or download the `selftest-result` file. "RESULT: OK" means it really works in that exe.
+
 ## Use
 1. Phone: open UwU Mic and tap Start. Note the IP and port it shows.
 2. PC: open UwUMicClient.exe, type the phone's IP and port, press Connect. There is nothing else to choose.
