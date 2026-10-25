@@ -16,6 +16,7 @@ import tempfile
 import threading
 import time
 import traceback
+import types
 import urllib.request
 import zipfile
 import tkinter as tk
@@ -75,6 +76,34 @@ class Jitter:
             return out
 
 
+class _AudiolabStandIn(types.ModuleType):
+    """Stand-in for the "audiolab" package. pyrnnoise imports it only for its audio-FILE helpers, which this
+    app never uses, but inside the packaged exe the real one can crash while loading (missing template folder)."""
+
+    def __getattr__(self, name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        return type(name, (), {})
+
+
+def load_rnnoise():
+    """Returns pyrnnoise's RNNoise class, working around the audiolab problem described above."""
+    import sys as _sys
+    try:
+        from pyrnnoise import RNNoise
+        return RNNoise
+    except Exception as first:
+        if isinstance(first, ModuleNotFoundError) and getattr(first, "name", "") == "pyrnnoise":
+            raise  # the library itself is missing: nothing to work around
+        for name in [m for m in list(_sys.modules)
+                     if m in ("audiolab", "pyrnnoise") or m.startswith(("audiolab.", "pyrnnoise."))]:
+            _sys.modules.pop(name, None)
+        _sys.modules["audiolab"] = _AudiolabStandIn("audiolab")
+        from pyrnnoise import RNNoise  # if this still fails, it is a different problem and is reported as such
+        log(f"pyrnnoise loaded with a stand-in for audiolab (first error: {first!r})")
+        return RNNoise
+
+
 class NoiseCanceller:
     """RNNoise: a small neural network that removes background noise from a voice.
     Works on the 48 kHz mono 16-bit audio the phone sends, in chunks of any size."""
@@ -83,7 +112,7 @@ class NoiseCanceller:
 
     def __init__(self):
         import numpy as np
-        from pyrnnoise import RNNoise
+        RNNoise = load_rnnoise()
 
         self.np = np
         self.rn = RNNoise(sample_rate=48000)
