@@ -7,9 +7,26 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.11" }
-      - run: pip install pyinstaller sounddevice numpy keyboard
-      - run: pyinstaller --onefile --noconsole --name UwUMicClient uwumic_client.py
+      - run: pip install pyinstaller sounddevice numpy keyboard pyrnnoise
+      - name: Build exe (bundles vbcable.zip if you added it)
+        run: |
+          $extra = @()
+          if (Test-Path vbcable.zip) { $extra += "--add-data"; $extra += "vbcable.zip;." }
+          pyinstaller --onefile --noconsole --name UwUMicClient --icon uwumic.ico --add-data "uwumic.ico;." --collect-all pyrnnoise @extra uwumic_client.py
+      - name: Self-test noise cancellation inside the built exe (does not block the build)
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath dist\UwUMicClient.exe -ArgumentList "--selftest","selftest.txt" -Wait -PassThru
+          if (Test-Path selftest.txt) { Get-Content selftest.txt } else { Write-Host "no selftest output" }
+          if ($p.ExitCode -ne 0) { throw "noise cancellation self-test failed" }
       - uses: actions/upload-artifact@v4
         with:
           name: UwUMicClient-exe
           path: dist/UwUMicClient.exe
+      - uses: actions/upload-artifact@v4
+        if: always()
+        continue-on-error: true
+        with:
+          name: selftest-result
+          path: selftest.txt
