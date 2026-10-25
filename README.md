@@ -22,6 +22,12 @@ up automatically). Keep that repo private and do not hand the exe to other peopl
 The driver itself is not bundled by default because it must be signed by its author and its licence requires an agreement
 for redistribution.
 
+## Audio output (automatic)
+Windows lists the virtual microphone several times (WASAPI, MME, DirectSound and WDM-KS). UwU Mic tries them best first and
+moves on to the next one if one cannot start, and re-reads the device list on every Connect and every retry (a freshly installed
+driver can take a little while to show up properly). The log (`%APPDATA%\\UwUMicClient.log`) lists the outputs it found and which
+one worked.
+
 ## Noise cancellation (RNNoise)
 The **Noise cancellation** checkbox (on by default) runs the received voice through RNNoise, a small neural network made to
 remove background noise (fans, hiss, room noise, a lot of keyboard clatter) from speech. It runs on the PC, so every phone behaves

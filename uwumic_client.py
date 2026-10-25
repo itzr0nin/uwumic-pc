@@ -206,19 +206,28 @@ class _Out:
                 extra = sd.WasapiSettings(auto_convert=True)
         except Exception:
             pass
+        extras = [extra, None] if extra is not None else [None]
         last = None
         for ch in (2, 1):
-            try:
-                self.channels = ch
-                self.stream = sd.OutputStream(samplerate=rate, device=device, channels=ch, dtype="int16",
-                                              callback=callback, blocksize=0, latency="low",
-                                              extra_settings=extra)
-                self.stream.start()
-                break
-            except Exception as e:  # try mono next
-                last = e
-        else:
-            raise last
+            for latency in ("low", "high"):
+                for ex in extras:
+                    self.channels = ch
+                    stream = None
+                    try:
+                        stream = sd.OutputStream(samplerate=rate, device=device, channels=ch, dtype="int16",
+                                                 callback=callback, blocksize=0, latency=latency,
+                                                 extra_settings=ex)
+                        stream.start()
+                        self.stream = stream
+                        return
+                    except Exception as e:
+                        last = e
+                        if stream is not None:
+                            try:
+                                stream.close()
+                            except Exception:
+                                pass
+        raise last
 
     def push(self, data):
         self.jit.push(data)
@@ -235,13 +244,27 @@ class AudioSink:
     """Plays the phone's audio into the chosen output (e.g. CABLE Input) and, only when asked,
     also into a speaker so you can hear what is being received."""
 
-    def __init__(self, rate, device, app):
+    def __init__(self, rate, devices, app):
         self.app = app
         self.rate = rate
-        self.device = device
         self.mon = None
         self.nc = None
-        self.main = _Out(rate, device, app, True)
+        if isinstance(devices, int):
+            devices = [devices]
+        names = dict(getattr(app, "devs", []))
+        self.main, self.device, last, tried = None, None, None, 0
+        for d in devices:
+            tried += 1
+            try:
+                self.main = _Out(rate, d, app, True)
+                self.device = d
+                log(f"output opened: {names.get(d, d)}")
+                break
+            except Exception as e:
+                last = e
+                log(f"output failed: {names.get(d, d)}: {e}")
+        if self.main is None:
+            raise RuntimeError(f"could not open the virtual microphone ({tried} outputs tried): {last}")
         app.streaming = True
         app.sink = self
         if app.monitor_device is not None:
@@ -472,16 +495,21 @@ def api_rank(label):
     return 5
 
 
-def pick_cable(devs):
-    """devs = [(index, label), ...]. Returns the index of the virtual microphone's input side
-    ("CABLE Input"), choosing the plain VB-Cable and the best audio system automatically, or None."""
+def cable_candidates(devs):
+    """devs = [(index, label), ...]. Returns every usable output of the virtual microphone ("CABLE Input"),
+    best first: the plain VB-Cable before A/B/C/D variants, WASAPI, then MME, DirectSound and WDM-KS last."""
     extra = ("cable-a", "cable-b", "cable-c", "cable-d", "a+b", "c+d", "hi-fi", "hifi")
     cands = [(i, n) for i, n in devs if "cable input" in n.lower()]
     if not cands:  # some other virtual cable (VoiceMeeter, ...)
         cands = [(i, n) for i, n in devs if is_virtual(n) and "input" in n.lower()]
-    if not cands:
-        return None
-    return min(cands, key=lambda c: (any(k in c[1].lower() for k in extra), api_rank(c[1]), c[0]))[0]
+    cands.sort(key=lambda c: (any(k in c[1].lower() for k in extra), api_rank(c[1]), c[0]))
+    return [i for i, _ in cands]
+
+
+def pick_cable(devs):
+    """The single best virtual-microphone output, or None."""
+    c = cable_candidates(devs)
+    return c[0] if c else None
 
 
 def pick_speaker(devs, default_index):
@@ -736,18 +764,26 @@ class App:
                 return
             log("installer started, waiting for CABLE Input to appear")
             self.status = "Installing - confirm the driver in the Windows window if it asks ..."
+            seen = 0   # polls since CABLE Input first appeared
             for _ in range(90):
                 time.sleep(2)
                 try:
                     refresh_audio_devices()
-                    found = any("CABLE Input" in n for _, n in output_devices())
+                    devs = output_devices()
+                    names = dict(devs)
+                    cands = cable_candidates(devs)
+                    good = any(api_rank(names[i]) < 9 for i in cands)
                 except Exception as e:
                     log(f"device refresh failed: {e!r}")
-                    found = False
-                if found:
-                    log("CABLE Input found")
-                    self.root.after(0, self.after_install)
-                    return
+                    cands, good = [], False
+                if cands:
+                    seen += 1
+                    log(f"CABLE Input visible ({len(cands)} outputs, usable={good})")
+                    # right after the install Windows can list only the kernel-streaming copy for a while:
+                    # give the normal ones (WASAPI/MME/DirectSound) up to ~40 s to appear
+                    if good or seen >= 20:
+                        self.root.after(0, self.after_install)
+                        return
             log("CABLE Input never appeared")
             self.status = ("The driver may need a restart: restart Windows once (VB-Cable asks for it), "
                            "then open UwU Mic again.")
@@ -783,24 +819,40 @@ class App:
         if not ip:
             messagebox.showerror("UwU Mic", "Enter the phone's IP address.")
             return
-        try:
-            self.devs = output_devices()
-            self.devmap = {name: i for i, name in self.devs}
-        except Exception:
-            pass
-        device = pick_cable(self.devs)
-        if device is None:
+        self.refresh_devices()
+        devices = cable_candidates(self.devs)
+        if not devices:
             self.status = "Setting up the virtual microphone first - press Connect again when it is ready."
             self.install_cable()
             return
+        log("outputs: " + "; ".join(f"{i}={n}" for i, n in self.devs))
+        log("virtual microphone outputs to try, best first: " + ", ".join(map(str, devices)))
         self.save()
         self.stop = threading.Event()
         self.lock(True)
-        threading.Thread(target=self.worker, args=(ip, port, device, self.stop), daemon=True).start()
+        threading.Thread(target=self.worker, args=(ip, port, devices, self.stop), daemon=True).start()
 
-    def worker(self, ip, port, device, stop):
+    def refresh_devices(self):
+        """Re-read the Windows audio devices (safe only while no audio stream is open)."""
+        try:
+            if not self.installing and self.sink is None:
+                refresh_audio_devices()
+        except Exception as e:
+            log(f"device refresh failed: {e!r}")
+        try:
+            self.devs = output_devices()
+            self.devmap = {name: i for i, name in self.devs}
+        except Exception as e:
+            log(f"could not list audio devices: {e!r}")
+        return cable_candidates(self.devs)
+
+    def worker(self, ip, port, devices, stop):
+        first = True
         while not stop.is_set():
-            stream(ip, port, stop, lambda rate: AudioSink(rate, device, self), self.set_status)
+            if not first:
+                devices = self.refresh_devices() or devices
+            first = False
+            stream(ip, port, stop, lambda rate: AudioSink(rate, devices, self), self.set_status)
             if stop.wait(2):
                 break
 
