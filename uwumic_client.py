@@ -76,14 +76,51 @@ class Jitter:
             return out
 
 
-class _AudiolabStandIn(types.ModuleType):
-    """Stand-in for the "audiolab" package. pyrnnoise imports it only for its audio-FILE helpers, which this
-    app never uses, but inside the packaged exe the real one can crash while loading (missing template folder)."""
+class _Dummy:
+    """Does nothing, whatever you do with it (call it, subclass it, read attributes from it)."""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __call__(self, *args, **kwargs):
+        return _Dummy()
 
     def __getattr__(self, name):
         if name.startswith("__"):
             raise AttributeError(name)
-        return type(name, (), {})
+        return _Dummy()
+
+
+class _AudiolabStandIn(types.ModuleType):
+    """Stand-in for the "audiolab" package. pyrnnoise imports it only for its audio-FILE helpers, which this
+    app never uses, but inside the packaged exe the real one can crash while loading (missing template folder).
+    Every name in it is a do-nothing object."""
+
+    def __getattr__(self, name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        return type(name, (_Dummy,), {})
+
+
+class _AudiolabFinder:
+    """Import hook: answers any `import audiolab...` (at any depth) with a stand-in module."""
+
+    @staticmethod
+    def find_spec(fullname, path=None, target=None):
+        if fullname == "audiolab" or fullname.startswith("audiolab."):
+            import importlib.machinery
+            return importlib.machinery.ModuleSpec(fullname, _AudiolabFinder, is_package=True)
+        return None
+
+    @staticmethod
+    def create_module(spec):
+        m = _AudiolabStandIn(spec.name)
+        m.__path__ = []
+        return m
+
+    @staticmethod
+    def exec_module(module):
+        pass
 
 
 def load_rnnoise():
@@ -98,7 +135,8 @@ def load_rnnoise():
         for name in [m for m in list(_sys.modules)
                      if m in ("audiolab", "pyrnnoise") or m.startswith(("audiolab.", "pyrnnoise."))]:
             _sys.modules.pop(name, None)
-        _sys.modules["audiolab"] = _AudiolabStandIn("audiolab")
+        if _AudiolabFinder not in _sys.meta_path:
+            _sys.meta_path.insert(0, _AudiolabFinder)
         from pyrnnoise import RNNoise  # if this still fails, it is a different problem and is reported as such
         log(f"pyrnnoise loaded with a stand-in for audiolab (first error: {first!r})")
         return RNNoise
