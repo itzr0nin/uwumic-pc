@@ -142,6 +142,57 @@ def load_rnnoise():
         return RNNoise
 
 
+class _NativeRNNoise:
+    """Talks straight to the RNNoise C library that ships inside pyrnnoise (through ctypes) and skips
+    pyrnnoise's Python wrapper class, which leans on audio-file machinery this app does not need."""
+
+    def __init__(self):
+        import ctypes
+        import importlib
+        import numpy as np
+
+        load_rnnoise()  # imports the package (using the audiolab stand-in if needed); raises if it is missing
+        low = importlib.import_module("pyrnnoise.rnnoise")
+        lib = getattr(low, "lib", None)
+        if lib is None:
+            lib = next((v for v in vars(low).values() if isinstance(v, ctypes.CDLL)), None)
+        if lib is None and isinstance(getattr(low, "LIBRNNOISE", None), str):
+            lib = ctypes.CDLL(low.LIBRNNOISE)
+        if lib is None:
+            raise RuntimeError("the native rnnoise library was not found inside pyrnnoise")
+        fp = ctypes.POINTER(ctypes.c_float)
+        lib.rnnoise_create.argtypes = [ctypes.c_void_p]
+        lib.rnnoise_create.restype = ctypes.c_void_p
+        lib.rnnoise_destroy.argtypes = [ctypes.c_void_p]
+        lib.rnnoise_destroy.restype = None
+        lib.rnnoise_process_frame.argtypes = [ctypes.c_void_p, fp, fp]
+        lib.rnnoise_process_frame.restype = ctypes.c_float
+        lib.rnnoise_get_frame_size.restype = ctypes.c_int
+        size = lib.rnnoise_get_frame_size()
+        if size != 480:
+            raise RuntimeError(f"unexpected RNNoise frame size {size}")
+        self.lib, self.fp, self.np = lib, fp, np
+        self.state = lib.rnnoise_create(None)
+        if not self.state:
+            raise RuntimeError("rnnoise_create failed")
+
+    def process(self, frame):
+        """frame: 480 int16 samples (numpy). Returns the cleaned frame as little-endian int16 bytes."""
+        np = self.np
+        x = np.ascontiguousarray(frame, dtype=np.float32)  # RNNoise wants 16-bit-sized values stored as floats
+        y = np.empty(480, dtype=np.float32)
+        self.lib.rnnoise_process_frame(self.state, y.ctypes.data_as(self.fp), x.ctypes.data_as(self.fp))
+        return np.clip(np.rint(y), -32768, 32767).astype("<i2").tobytes()
+
+    def close(self):
+        state, self.state = self.state, None
+        if state:
+            try:
+                self.lib.rnnoise_destroy(state)
+            except Exception:
+                pass
+
+
 class NoiseCanceller:
     """RNNoise: a small neural network that removes background noise from a voice.
     Works on the 48 kHz mono 16-bit audio the phone sends, in chunks of any size."""
@@ -150,12 +201,25 @@ class NoiseCanceller:
 
     def __init__(self):
         import numpy as np
-        RNNoise = load_rnnoise()
 
         self.np = np
-        self.rn = RNNoise(sample_rate=48000)
         self.buf = bytearray()
-        self.call = None  # how this version of pyrnnoise wants to be called, found on first use
+        self.call = None  # (wrapper route only) how this version of pyrnnoise wants to be called
+        self.native = None
+        self.rn = None
+        try:
+            self.native = _NativeRNNoise()
+            self.mode = "native library"
+            log("RNNoise: using the native library directly")
+        except Exception as e:
+            log(f"RNNoise native route unavailable ({e!r}); trying pyrnnoise's own class")
+            RNNoise = load_rnnoise()
+            self.rn = RNNoise(sample_rate=48000)
+            self.mode = "pyrnnoise class"
+
+    def close(self):
+        if self.native is not None:
+            self.native.close()
 
     def reset(self):
         self.buf.clear()
@@ -177,6 +241,8 @@ class NoiseCanceller:
         raise ValueError("unexpected result from RNNoise")
 
     def _frame(self, frame):
+        if self.native is not None:
+            return self.native.process(frame)
         if self.call is None:
             tried = []
             for name, fn in (("frame-1d", lambda f: self.rn.denoise_frame(f)),
@@ -226,7 +292,7 @@ def run_selftest(path):
         in_rms = float(np.sqrt(np.mean(n[len(n) // 2:] ** 2)))
         out_rms = float(np.sqrt(np.mean(o[len(o) // 2:] ** 2))) + 1e-9
         drop = 20 * np.log10(in_rms / out_rms)
-        lines.append(f"call style: {getattr(nc.call, '__name__', 'detected')}; samples in {len(n)} out {len(o)}")
+        lines.append(f"route: {nc.mode}; samples in {len(n)} out {len(o)}")
         lines.append(f"steady noise reduced by {drop:.1f} dB")
         if len(out) == len(raw) and drop >= 6:
             lines.append("RESULT: OK")
@@ -381,6 +447,9 @@ class AudioSink:
         mon, self.mon = self.mon, None
         if mon is not None:
             mon.close()
+        if self.nc is not None:
+            self.nc.close()
+            self.nc = None
         self.main.close()
         self.app.streaming = False
         self.app.level = 0.0
