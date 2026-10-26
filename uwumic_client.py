@@ -7,6 +7,7 @@ into the output device you choose. Pick "CABLE Input" (VB-Cable) and then select
 """
 import datetime
 import json
+import math
 import os
 import socket
 import struct
@@ -20,7 +21,7 @@ import types
 import urllib.request
 import zipfile
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import messagebox
 
 try:
     import keyboard  # global hotkeys (Windows)
@@ -420,6 +421,7 @@ class AudioSink:
 
     def push(self, data):
         app = self.app
+        app.pkts = getattr(app, "pkts", 0) + 1
         if app.noise_cancel and not app.nc_error:
             if self.nc is None:
                 try:
@@ -473,12 +475,15 @@ def recv_exact(sock, n, stop):
     return buf
 
 
-def stream(host, port, stop, make_sink, status):
+def stream(host, port, stop, make_sink, status, on_connect=None):
     """Connect once and pump audio until the connection ends or `stop` is set."""
     sock = sink = None
     try:
         status(f"Connecting to {host}:{port} ...")
+        t0 = time.perf_counter()
         sock = socket.create_connection((host, port), timeout=5)
+        if on_connect:
+            on_connect(round((time.perf_counter() - t0) * 1000))
         sock.settimeout(1)
         magic, rate, ch, bits = HEADER.unpack(recv_exact(sock, HEADER.size, stop))
         if magic != MAGIC or ch != 1 or bits != 16:
@@ -677,18 +682,64 @@ def output_devices():
     return out
 
 
+# ----------------------------------------------------------------- look
+BG, HEAD_BG, PANEL, FIELD = "#050911", "#070C15", "#09111D", "#03060B"
+EDGE, EDGE_HI, TEAL_EDGE = "#14243A", "#1F3B57", "#0E5566"
+TXT, TXT_SOFT, DIM, DIMMER = "#E9F2FB", "#B8C7D9", "#6C7F99", "#46566C"
+CYAN_BG, CYAN_EDGE = "#052B34", "#0B7A8C"
+RED_BG, RED_EDGE = "#2A0714", "#9A1238"
+GREEN, GREEN_BG, GREEN_EDGE = "#19D9AE", "#062A24", "#0C7A64"
+AMBER_BG, AMBER_EDGE = "#2A2108", "#8A6A12"
+APP_VERSION = "1.1.0"
+F_UI, F_MONO, F_DISP = "Segoe UI", "Consolas", "Bahnschrift"
+
+
+def mix(c1, c2, t):
+    """Colour between two #rrggbb colours (t = 0 .. 1)."""
+    a = [int(c1[i:i + 2], 16) for i in (1, 3, 5)]
+    b = [int(c2[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#" + "".join(f"{round(x + (y - x) * t):02x}" for x, y in zip(a, b))
+
+
+def clip_x(poly, x0, x1):
+    """Clip a polygon to the vertical strip x0 <= x <= x1 (used to paint gradients inside odd shapes)."""
+    def clip(pts, inside, inter):
+        out = []
+        for i, cur in enumerate(pts):
+            prev = pts[i - 1]
+            if inside(cur):
+                if not inside(prev):
+                    out.append(inter(prev, cur))
+                out.append(cur)
+            elif inside(prev):
+                out.append(inter(prev, cur))
+        return out
+
+    def at(xv):
+        return lambda a, b: (xv, a[1] + (b[1] - a[1]) * (xv - a[0]) / (b[0] - a[0]))
+
+    pts = clip(poly, lambda p: p[0] >= x0, at(x0))
+    return clip(pts, lambda p: p[0] <= x1, at(x1)) if pts else []
+
+
+def shorten(text, n):
+    text = " ".join(str(text).split())
+    return text if len(text) <= n else text[: n - 1].rstrip() + "\u2026"
+
+
 # ----------------------------------------------------------------- merged meter + volume
 class LevelSlider(tk.Canvas):
-    """One bar: the bright fill is the live loudness, the hexagon handle is the volume (0-100%)."""
+    """One bar: the bright fill is the live loudness, the glowing line and hexagon handle are the volume (0-100%)."""
 
     PAD = 12
 
-    def __init__(self, master, command, value=1.0, width=330, height=40, bg="#f0f0f0"):
+    def __init__(self, master, command, value=1.0, width=330, height=40, bg=PANEL, scale=1.0):
         super().__init__(master, width=width, height=height, bg=bg, highlightthickness=0, cursor="hand2")
         self.command = command
         self.value = value
         self.level = 0.0
         self.muted = False
+        self.k = scale
         self.bind("<Button-1>", self._drag)
         self.bind("<B1-Motion>", self._drag)
         self.bind("<Configure>", lambda e: self.redraw())
@@ -710,10 +761,11 @@ class LevelSlider(tk.Canvas):
 
     def _drag(self, e):
         w, _ = self._size()
-        span = w - 2 * self.PAD
+        pad = self.PAD * self.k
+        span = w - 2 * pad
         if span <= 0:
             return
-        v = round(min(1.0, max(0.0, (e.x - self.PAD) / span)) * 100) / 100
+        v = round(min(1.0, max(0.0, (e.x - pad) / span)) * 100) / 100
         if v != self.value:
             self.value = v
             self.redraw()
@@ -721,22 +773,378 @@ class LevelSlider(tk.Canvas):
 
     def redraw(self):
         self.delete("all")
+        k = self.k
         w, h = self._size()
-        left, right, cy, th = self.PAD, w - self.PAD, h / 2, 8
+        left, right, cy = self.PAD * k, w - self.PAD * k, h / 2
         span = right - left
-        self.create_rectangle(left, cy - th / 2, right, cy + th / 2, fill="#141C29", outline="#1F2A3B")
-        if not self.muted and self.level > 0:
-            col = RED if self.level > 0.9 else AMBER if self.level > 0.7 else CYAN
-            self.create_rectangle(left, cy - th / 2, left + span * self.level, cy + th / 2, fill=col, outline="")
+        th = 6 * k
+        self.create_rectangle(left, cy - th / 2, right, cy + th / 2, fill="#0A1626", outline="#16314A")
         x = left + span * self.value
-        if not self.muted and self.value > 0:
-            self.create_line(left, cy, x, cy, fill=CYAN, width=2)
-        body = GREY if self.muted else CYAN
-        shine = "#9AA1AC" if self.muted else "#B8F7FF"
-        for hw, hh, col in ((9, 14, body), (4, 7, shine)):
+        if not self.muted and self.value > 0:  # glowing volume line
+            for width, col in ((9 * k, "#062F39"), (5 * k, "#0A6070"), (2 * k, CYAN)):
+                self.create_line(left, cy, x, cy, fill=col, width=max(1, round(width)))
+        if not self.muted and self.level > 0:  # live loudness
+            col = RED if self.level > 0.9 else AMBER if self.level > 0.7 else CYAN
+            self.create_rectangle(left, cy - th / 2 + k, left + span * self.level, cy + th / 2 - k, fill=col, outline="")
+        body = "#5B6573" if self.muted else CYAN
+        shine = "#98A2B0" if self.muted else "#C4F8FF"
+        for hw, hh, col, edge in ((8 * k, 13 * k, body, "#0A8FA3" if not self.muted else "#3A4452"),
+                                  (3.5 * k, 6.5 * k, shine, "")):
             self.create_polygon(x, cy - hh, x + hw, cy - hh * 0.55, x + hw, cy + hh * 0.55,
                                 x, cy + hh, x - hw, cy + hh * 0.55, x - hw, cy - hh * 0.55,
-                                fill=col, outline="")
+                                fill=col, outline=edge)
+
+
+class Painter:
+    """Draws in logical (96 dpi) units, scaled for the real screen."""
+
+    def __init__(self, canvas, scale, measure):
+        self.c, self.S, self.measure = canvas, scale, measure
+
+    def _w(self, width):
+        return max(1, round(width * self.S))
+
+    def rect(self, x1, y1, x2, y2, fill="", outline="", width=1, tags=()):
+        S = self.S
+        return self.c.create_rectangle(x1 * S, y1 * S, x2 * S, y2 * S, fill=fill, outline=outline,
+                                       width=self._w(width) if outline else 0, tags=tags)
+
+    def poly(self, pts, fill="", outline="", width=1, tags=()):
+        flat = [v * self.S for pt in pts for v in pt]
+        return self.c.create_polygon(*flat, fill=fill, outline=outline,
+                                     width=self._w(width) if outline else 0, tags=tags)
+
+    def line(self, pts, fill, width=1, tags=()):
+        flat = [v * self.S for pt in pts for v in pt]
+        return self.c.create_line(*flat, fill=fill, width=self._w(width), tags=tags)
+
+    def oval(self, x1, y1, x2, y2, fill="", outline="", width=1, tags=()):
+        S = self.S
+        return self.c.create_oval(x1 * S, y1 * S, x2 * S, y2 * S, fill=fill, outline=outline,
+                                  width=self._w(width) if outline else 0, tags=tags)
+
+    def tw(self, s, font, track=0):
+        """Width of a text in logical units."""
+        return self.measure(font, s) / self.S + track * max(0, len(s) - 1)
+
+    def text(self, x, y, s, fill, font, anchor="w", tags=(), track=0, wrap=None):
+        S = self.S
+        if not track:
+            kw = {"width": wrap * S} if wrap else {}
+            self.c.create_text(x * S, y * S, text=s, fill=fill, font=font, anchor=anchor, tags=tags, **kw)
+            return self.tw(s, font)
+        total = self.tw(s, font, track)
+        cx = x - total if anchor == "e" else x - total / 2 if anchor in ("c", "center") else x
+        for ch in s:
+            self.c.create_text(cx * S, y * S, text=ch, fill=fill, font=font, anchor="w", tags=tags)
+            cx += self.measure(font, ch) / S + track
+        return total
+
+    def chip(self, x, cy, s, fg, bg, edge, anchor="w", dot=None, tags=(), font=(F_MONO, 8, "bold"), track=0.8):
+        """Small label box. x is its left edge (anchor 'w') or right edge ('e'). Returns its width."""
+        pad = 8
+        tw = self.tw(s, font, track)
+        w = tw + 2 * pad + (11 if dot else 0)
+        x0 = x - w if anchor == "e" else x
+        self.rect(x0, cy - 10, x0 + w, cy + 10, fill=bg, outline=edge, tags=tags)
+        tx = x0 + pad
+        if dot:
+            self.oval(tx, cy - 3, tx + 6, cy + 3, fill=dot, tags=tags)
+            tx += 11
+        self.text(tx, cy, s, fg, font, tags=tags, track=track)
+        return w
+
+
+class Ui:
+    """The window: a dark, cyan 'receiver' look drawn on one canvas, driven by the state in App."""
+
+    W, H = 600, 566
+
+    def __init__(self, root, app):
+        import tkinter.font as tkfont
+
+        self.root, self.app = root, app
+        self.S = max(1.0, float(root.winfo_fpixels("1i")) / 96.0)
+        S = self.S
+        self._fonts = {}
+
+        def measure(font, text):
+            f = self._fonts.get(font)
+            if f is None:
+                weight = font[2] if len(font) > 2 else "normal"
+                f = self._fonts[font] = tkfont.Font(root=root, family=font[0], size=font[1], weight=weight)
+            return f.measure(text)
+
+        root.configure(bg=BG)
+        root.geometry(f"{round(self.W * S)}x{round(self.H * S)}")
+        self.c = tk.Canvas(root, width=round(self.W * S), height=round(self.H * S), bg=BG, highlightthickness=0, bd=0)
+        self.c.pack()
+        self.p = Painter(self.c, S, measure)
+        self.keys = {}
+        self.focus = {"ip": False, "port": False}
+        self._static()
+        self._widgets()
+        self._actions()
+        self.dark_title_bar()
+
+    # -- helpers
+    def d(self, v):
+        return round(v * self.S)
+
+    def dark_title_bar(self):
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            self.root.update_idletasks()
+            hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
+            for attr in (20, 19):  # dark title bar (Windows 10/11)
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(ctypes.c_int(1)), 4)
+            rgb = int(HEAD_BG[5:7], 16) << 16 | int(HEAD_BG[3:5], 16) << 8 | int(HEAD_BG[1:3], 16)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 35, ctypes.byref(ctypes.c_int(rgb)), 4)  # Windows 11
+        except Exception:
+            pass
+
+    # -- fixed parts
+    def _static(self):
+        p, W, H = self.p, self.W, self.H
+        for x in range(0, W + 1, 24):
+            p.line([(x, 0), (x, H)], "#08131E")
+        for y in range(0, H + 1, 24):
+            p.line([(0, y), (W, y)], "#08131E")
+        p.rect(0, 0, W, 2, fill="#0AA9BE")
+        p.rect(0, 2, W, 46, fill=HEAD_BG)
+        p.line([(0, 46), (W, 46)], EDGE)
+        p.poly([(30, 15), (39, 24), (30, 33), (21, 24)], fill=CYAN)
+        p.poly([(30, 19), (35, 24), (30, 29), (25, 24)], fill=HEAD_BG)
+        x = 50
+        x += p.text(x, 24, "UwU Mic", TXT, (F_DISP, 13, "bold")) + 8
+        x += p.text(x, 24, "// PC CLIENT", CYAN, (F_DISP, 10, "bold")) + 10
+        p.chip(x, 24, f"v{APP_VERSION}", DIM, HEAD_BG, EDGE, font=(F_MONO, 8, "normal"), track=0.3)
+        p.text(20, 66, "AUDIO STREAM RECEIVER", DIM, (F_MONO, 9, "normal"), track=1.6)
+        # sample rate / format, right aligned
+        parts = [("SAMPLE RATE:", DIM, "normal"), (" 48.0 kHz", TXT, "bold"), ("  |  ", DIMMER, "normal"),
+                 ("FORMAT:", DIM, "normal"), (" PCM 16-bit", TXT, "bold")]
+        fnt = lambda wt: (F_MONO, 8, wt)
+        total = sum(p.tw(s, fnt(wt)) for s, _, wt in parts)
+        x = W - 20 - total
+        for s, col, wt in parts:
+            x += p.text(x, 66, s, col, fnt(wt))
+        p.line([(20, 112), (W - 20, 112)], EDGE)
+        for x, w, y in ((20, 368, 124), (400, 180, 124)):
+            p.rect(x, y, x + w, y + 80, fill=PANEL, outline=EDGE)
+        p.text(414, 142, "Port", DIM, (F_UI, 9, "normal"))
+        p.rect(20, 280, 580, 512, fill=PANEL, outline=EDGE)
+        p.line([(34, 358), (566, 358)], EDGE)
+        p.text(38, 376, "VOLUME OUTPUT", DIM, (F_MONO, 9, "normal"), track=1.2)
+        x0, span = 48, 504  # under the slider (it starts at x=36 and has 12 px of padding)
+        for pct in (0, 25, 50, 75, 100):
+            p.text(x0 + span * pct / 100, 438, f"{pct}%", DIMMER, (F_MONO, 8, "normal"), anchor="c")
+        p.rect(0, 528, W, H, fill=HEAD_BG)
+        p.line([(0, 528), (W, 528)], EDGE)
+
+    # -- real widgets
+    def _widgets(self):
+        a, p, S, c = self.app, self.p, self.S, self.c
+        digits = (self.root.register(lambda s: s == "" or (s.isdigit() and len(s) <= 5)), "%P")
+        common = dict(bg=FIELD, fg=TXT, insertbackground=CYAN, relief="flat", bd=0, highlightthickness=0,
+                      disabledbackground=FIELD, disabledforeground=CYAN, font=(F_MONO, 13, "bold"))
+        self.ip_e = tk.Entry(self.root, textvariable=a.ip, **common)
+        self.port_e = tk.Entry(self.root, textvariable=a.port, justify="center", validate="key",
+                               validatecommand=digits, **common)
+        c.create_window(self.d(20 + 10 + 40), self.d(124 + 52), window=self.ip_e, anchor="w",
+                        width=self.d(368 - 20 - 44), height=self.d(26))
+        c.create_window(self.d(400 + 90), self.d(124 + 52), window=self.port_e, anchor="center",
+                        width=self.d(180 - 30), height=self.d(26))
+        for key, e in (("ip", self.ip_e), ("port", self.port_e)):
+            e.bind("<FocusIn>", lambda ev, k=key: self._focus(k, True))
+            e.bind("<FocusOut>", lambda ev, k=key: self._focus(k, False))
+        self.slider = LevelSlider(self.root, a.on_vol, a.gain, width=self.d(528), height=self.d(40), bg=PANEL, scale=S)
+        c.create_window(self.d(36), self.d(280 + 114), window=self.slider, anchor="nw")
+
+    def _focus(self, key, on):
+        self.focus[key] = on
+        self.keys.pop("cards", None)
+
+    def set_locked(self, on):
+        for e in (self.ip_e, self.port_e):
+            e.config(state="disabled" if on else "normal")
+        self.keys.clear()
+
+    def _actions(self):
+        c = self.c
+        acts = {"act_connect": self.app.toggle, "act_nc": lambda: self._flip(self.app.nc_var, self.app.on_noise),
+                "act_mon": lambda: self._flip(self.app.mon_var, self.app.on_monitor),
+                "act_mute": self.app.toggle_mute, "act_hotkey": self.app.capture_hotkey}
+        for tag, fn in acts.items():
+            c.tag_bind(tag, "<Button-1>", lambda ev, f=fn: f())
+            c.tag_bind(tag, "<Enter>", lambda ev: c.config(cursor="hand2"))
+            c.tag_bind(tag, "<Leave>", lambda ev: c.config(cursor=""))
+
+    @staticmethod
+    def _flip(var, handler):
+        var.set(not var.get())
+        handler()
+
+    # -- state -> pictures
+    def render(self):
+        a = self.app
+        st = dict(active=bool(a.active), streaming=bool(a.streaming), muted=bool(a.muted),
+                  pct=round(a.gain * 100), nc=bool(a.nc_var.get()), mon=bool(a.mon_var.get()))
+        mode = "live" if st["streaming"] else "connecting" if st["active"] else "off"
+        layers = {
+            "hdr": (mode,),
+            "chips": (st["streaming"], st["muted"]),
+            "cards": (mode, self.focus["ip"], self.focus["port"]),
+            "btn": (st["active"],),
+            "opts": (st["nc"], st["mon"]),
+            "vol": (st["muted"], st["pct"], self._db_text()),
+            "mute": (st["muted"], a.hotkey_label()),
+            "foot": (mode, a.status, a.ip.get(), a.port.get(), a.pps, a.ping_ms),
+        }
+        for name, key in layers.items():
+            if self.keys.get(name) != key:
+                self.keys[name] = key
+                self.c.delete(name)
+                getattr(self, "_draw_" + name)(st, mode)
+        self.slider.set_state(0.0 if st["muted"] else a.gain, a.shown, st["muted"])
+
+    def _db_text(self):
+        s = self.app.shown
+        return "-\u221e dBFS" if s < 0.003 else f"{20 * math.log10(min(1.0, s)):.1f} dBFS"
+
+    def _draw_hdr(self, st, mode):
+        p, W = self.p, self.W
+        txt, fg, bg, edge, dot = {
+            "live": ("CONNECTED", CYAN, CYAN_BG, CYAN_EDGE, GREEN),
+            "connecting": ("CONNECTING", AMBER, AMBER_BG, AMBER_EDGE, AMBER),
+            "off": ("DISCONNECTED", DIM, HEAD_BG, EDGE_HI, AMBER),
+        }[mode]
+        p.chip(W - 20, 24, txt, fg, bg, edge, anchor="e", dot=dot, tags=("hdr",), font=(F_MONO, 8, "bold"), track=1.0)
+
+    def _draw_chips(self, st, mode):
+        p = self.p
+        x = 20
+        if st["muted"]:
+            x += p.chip(x, 92, "AUDIO MUTED", RED, RED_BG, RED_EDGE, dot=RED, tags=("chips",)) + 8
+        elif st["streaming"]:
+            x += p.chip(x, 92, "LIVE AUDIO", GREEN, GREEN_BG, GREEN_EDGE, dot=GREEN, tags=("chips",)) + 8
+        p.chip(x, 92, "LOW-LATENCY", CYAN, CYAN_BG, CYAN_EDGE, tags=("chips",))
+
+    def _draw_cards(self, st, mode):
+        p, a = self.p, self.app
+        live = mode == "live"
+        # phone ip card
+        lx = 34
+        if live:
+            p.oval(lx, 139, lx + 6, 145, fill=CYAN, tags=("cards",))
+            lx += 12
+        p.text(lx, 142, "Phone IP address", CYAN if live else DIM, (F_UI, 9, "bold" if live else "normal"), tags=("cards",))
+        x = 376
+        x -= p.chip(x, 142, "IPv4", CYAN, CYAN_BG, CYAN_EDGE, anchor="e", tags=("cards",), font=(F_MONO, 7, "bold")) + 6
+        if live:
+            p.chip(x, 142, "STREAMING", CYAN, CYAN_BG, CYAN_EDGE, anchor="e", tags=("cards",), font=(F_MONO, 7, "bold"))
+        p.chip(568, 142, "TCP", CYAN, CYAN_BG, CYAN_EDGE, anchor="e", tags=("cards",), font=(F_MONO, 7, "bold"))
+        for key, x1, x2 in (("ip", 30, 378), ("port", 410, 570)):
+            col = CYAN_EDGE if (live or self.focus[key]) else EDGE_HI
+            p.rect(x1, 158, x2, 194, fill=FIELD, outline=col, tags=("cards",))
+        # globe icon
+        gc = CYAN if live else "#2C8696"
+        p.oval(42, 168, 56, 182, outline=gc, tags=("cards",))
+        p.oval(46, 168, 52, 182, outline=gc, tags=("cards",))
+        p.line([(42, 175), (56, 175)], gc, tags=("cards",))
+
+    def _draw_btn(self, st, mode):
+        p, on = self.p, st["active"]
+        x, y, w, h, cut = 20, 218, 560, 46, 14
+        shape = [(x, y), (x + w - cut, y), (x + w, y + cut), (x + w, y + h), (x + cut, y + h), (x, y + h - cut)]
+        c1, c2 = ("#FF0A45", "#FF3B6B") if on else ("#00F0FF", "#00C8FF")
+        n = 28
+        for i in range(n):
+            pts = clip_x(shape, x + w * i / n - (0.6 if i else 0), x + w * (i + 1) / n + 0.6)
+            if len(pts) >= 3:
+                p.poly(pts, fill=mix(c1, c2, i / (n - 1)), tags=("btn", "act_connect"))
+        label = "DISCONNECT" if on else "CONNECT"
+        fg = "#FFE6EC" if on else "#04121A"
+        font = (F_DISP, 13, "bold")
+        tw = p.tw(label, font, 2.5)
+        gx = x + w / 2 - (14 + 12 + tw) / 2
+        cy = y + h / 2
+        if on:
+            p.rect(gx, cy - 5, gx + 10, cy + 5, fill="#FFB3C5", tags=("btn", "act_connect"))
+        else:
+            p.poly([(gx, cy - 6), (gx + 10, cy), (gx, cy + 6)], fill=fg, tags=("btn", "act_connect"))
+        p.text(gx + 26, cy, label, fg, font, tags=("btn", "act_connect"), track=2.5)
+
+    def _check(self, y, checked, label, tag):
+        p = self.p
+        p.rect(34, y - 12, 300, y + 12, fill=PANEL, tags=("opts", tag))  # click area
+        p.rect(34, y - 8, 50, y + 8, fill=CYAN if checked else FIELD, outline=CYAN if checked else EDGE_HI, tags=("opts", tag))
+        if checked:
+            p.line([(37, y), (41, y + 4), (48, y - 4)], "#04121A", width=2, tags=("opts", tag))
+        p.text(62, y, label, TXT_SOFT, (F_UI, 10), tags=("opts", tag))
+
+    def _draw_opts(self, st, mode):
+        self._check(304, st["nc"], "Noise suppression", "act_nc")
+        self._check(334, st["mon"], "Play on speaker", "act_mon")
+
+    def _draw_vol(self, st, mode):
+        p = self.p
+        if st["muted"]:
+            p.chip(170, 376, "MUTED (0%)", RED, RED_BG, RED_EDGE, tags=("vol",), font=(F_MONO, 8, "bold"))
+        else:
+            p.chip(170, 376, f"Volume {st['pct']}%", CYAN, CYAN_BG, CYAN_EDGE, tags=("vol",), font=(F_MONO, 8, "bold"), track=0.4)
+        p.text(566, 376, self._db_text(), DIM, (F_MONO, 8, "normal"), anchor="e", tags=("vol",))
+
+    def _draw_mute(self, st, mode):
+        p, muted = self.p, st["muted"]
+        y1, y2 = 460, 496
+        p.rect(36, y1, 294, y2, fill=RED_BG if muted else "#0A1626", outline=RED if muted else EDGE_HI,
+               tags=("mute", "act_mute"))
+        col = RED if muted else TXT_SOFT
+        cy = (y1 + y2) / 2
+        label = "MUTED (TAP TO UNMUTE)" if muted else "MUTE"
+        font = (F_MONO, 9, "bold")
+        gx = 165 - (22 + p.tw(label, font, 1.2)) / 2
+        # speaker with a cross
+        p.poly([(gx, cy - 3), (gx + 4, cy - 3), (gx + 9, cy - 7), (gx + 9, cy + 7), (gx + 4, cy + 3), (gx, cy + 3)],
+               outline=col, tags=("mute", "act_mute"))
+        p.line([(gx + 12, cy - 3), (gx + 18, cy + 3)], col, tags=("mute", "act_mute"))
+        p.line([(gx + 18, cy - 3), (gx + 12, cy + 3)], col, tags=("mute", "act_mute"))
+        p.text(gx + 26, cy, label, col, font, tags=("mute", "act_mute"), track=1.2)
+        p.rect(306, y1, 564, y2, fill="#08111C", outline=EDGE, tags=("mute", "act_hotkey"))
+        key = self.app.hotkey_label()
+        kf = (F_MONO, 9, "bold")
+        kw = max(22, p.tw(key, kf, 0.5) + 16)
+        lab = "HOTKEY:"
+        lw = p.tw(lab, (F_MONO, 9, "normal"), 1.2)
+        gx = 435 - (lw + 10 + kw) / 2
+        p.text(gx, cy, lab, DIM, (F_MONO, 9, "normal"), tags=("mute", "act_hotkey"), track=1.2)
+        kx = gx + lw + 10
+        p.rect(kx, cy - 10, kx + kw, cy + 10, fill=FIELD, outline=EDGE_HI, tags=("mute", "act_hotkey"))
+        p.text(kx + kw / 2, cy, key, CYAN, kf, anchor="c", tags=("mute", "act_hotkey"), track=0.5)
+
+    def _draw_foot(self, st, mode):
+        p, a = self.p, self.app
+        col = {"live": CYAN, "connecting": AMBER, "off": "#56677D"}[mode]
+        p.oval(22, 541, 34, 553, fill=col if mode != "off" else "", outline="#56677D" if mode == "off" else "", tags=("foot",))
+        if mode == "live":
+            p.text(46, 538, f"Connected // Receiving stream ({a.ip.get().strip()}:{a.port.get()})", CYAN,
+                   (F_MONO, 9, "bold"), anchor="nw", tags=("foot",))
+            p.text(46, 553, 'Choose "CABLE Output" as the microphone in your app or game', DIMMER,
+                   (F_MONO, 7, "normal"), anchor="nw", tags=("foot",))
+        else:
+            p.text(46, 539, shorten(a.status, 92), TXT_SOFT if mode == "connecting" else DIM, (F_MONO, 9, "bold"),
+                   anchor="nw", tags=("foot",), wrap=330)
+        ping = f"{a.ping_ms}" if (mode == "live" and a.ping_ms is not None) else "\u2014"
+        pk = f"{a.pps}" if mode == "live" else "0"
+        parts = [("PACKETS: ", DIM, "normal"), (pk, CYAN, "bold"), (" pkts/s", DIM, "normal"), ("   PING: ", DIM, "normal"),
+                 (ping, CYAN, "bold"), (" ms", DIM, "normal")]
+        f = lambda wt: (F_MONO, 8, wt)
+        total = sum(p.tw(s, f(wt)) for s, _, wt in parts)
+        x = 580 - total
+        for s, colr, wt in parts:
+            x += p.text(x, 547, s, colr, f(wt), tags=("foot",))
 
 
 # ----------------------------------------------------------------- GUI
@@ -772,56 +1180,29 @@ class App:
         self.hotkey = cfg.get("hotkey", "ctrl+shift+m")
         self.hk_handle = None
 
-        pad = {"padx": 10, "pady": 4}
-        f = ttk.Frame(root, padding=10)
-        f.grid()
-        ttk.Label(f, text="Phone IP address").grid(row=0, column=0, sticky="w", **pad)
-        ttk.Label(f, text="Port").grid(row=0, column=1, sticky="w", **pad)
         self.ip = tk.StringVar(value=cfg.get("ip", ""))
         self.port = tk.StringVar(value=str(cfg.get("port", DEFAULT_PORT)))
-        self.ip_e = ttk.Entry(f, textvariable=self.ip, width=26)
-        self.port_e = ttk.Entry(f, textvariable=self.port, width=8)
-        self.ip_e.grid(row=1, column=0, **pad)
-        self.port_e.grid(row=1, column=1, **pad)
-
-        self.btn = tk.Button(f, text="Connect", command=self.toggle, bg=CYAN, fg=INK_ON_CYAN,
-                             activebackground="#5CF1FF", activeforeground=INK_ON_CYAN, relief="flat", bd=0,
-                             font=("Segoe UI", 11, "bold"), cursor="hand2", pady=8)
-        self.btn.grid(row=2, column=0, columnspan=2, sticky="ew", **pad)
-
         self.nc_var = tk.BooleanVar(value=self.noise_cancel)
-        self.nc_chk = ttk.Checkbutton(f, text="Noise cancellation", variable=self.nc_var, command=self.on_noise)
-        self.nc_chk.grid(row=3, column=0, columnspan=2, sticky="w", **pad)
         self.mon_var = tk.BooleanVar(value=False)
-        self.mon_chk = ttk.Checkbutton(f, text="Play on speaker (test) - use headphones to avoid echo",
-                                       variable=self.mon_var, command=self.on_monitor)
-        self.mon_chk.grid(row=4, column=0, columnspan=2, sticky="w", **pad)
         self.devs = []
         self.devmap = {}
         self.load_devices()
-
-        self.vol_label = ttk.Label(f, text=f"Volume {round(self.gain * 100)}%")
-        self.vol_label.grid(row=5, column=0, columnspan=2, sticky="w", **pad)
-        try:
-            bg = ttk.Style().lookup("TFrame", "background") or root.cget("bg")
-        except Exception:
-            bg = "#f0f0f0"
-        self.slider = LevelSlider(f, self.on_vol, self.gain, bg=bg)
-        self.slider.grid(row=6, column=0, columnspan=2, **pad)
-
-        self.mute_btn = ttk.Button(f, text="Mute", command=self.toggle_mute)
-        self.hk_btn = ttk.Button(f, command=self.capture_hotkey)
-        self.mute_btn.grid(row=7, column=0, sticky="ew", **pad)
-        self.hk_btn.grid(row=7, column=1, sticky="ew", **pad)
-
-        self.status_label = ttk.Label(f, text="Idle", foreground="gray", wraplength=340)
-        self.status_label.grid(row=8, column=0, columnspan=2, sticky="w", **pad)
+        self.pkts = 0       # received audio packets (for the footer's pkts/s)
+        self.pps = 0
+        self._pk_n, self._pk_t = 0, time.monotonic()
+        self.ping_ms = None  # time the phone took to accept the connection
+        self.capturing = False
+        self.ui = Ui(root, self)
 
         self.apply_hotkey(self.hotkey)
         root.protocol("WM_DELETE_WINDOW", self.close)
         self.poll()
         if self.needs_setup():
             root.after(800, self.first_run_setup)
+
+    @property
+    def slider(self):
+        return self.ui.slider
 
     # -- devices (chosen automatically)
     def load_devices(self):
@@ -988,7 +1369,8 @@ class App:
             if not first:
                 devices = self.refresh_devices() or devices
             first = False
-            stream(ip, port, stop, lambda rate: AudioSink(rate, devices, self), self.set_status)
+            stream(ip, port, stop, lambda rate: AudioSink(rate, devices, self), self.set_status,
+                   on_connect=self.set_ping)
             if stop.wait(2):
                 break
 
@@ -998,17 +1380,15 @@ class App:
         self.streaming = False
         self.level = 0.0
         self.shown = 0.0
+        self.ping_ms = None
         self.status = "Disconnected"
 
     def lock(self, on):
         self.active = on
-        if on:
-            self.btn.config(text="Disconnect", bg=RED, fg="white", activebackground="#FF4D78", activeforeground="white")
-        else:
-            self.btn.config(text="Connect", bg=CYAN, fg=INK_ON_CYAN, activebackground="#5CF1FF",
-                            activeforeground=INK_ON_CYAN)
-        for w in (self.ip_e, self.port_e):
-            w.config(state="disabled" if on else "normal")
+        self.ui.set_locked(on)
+
+    def set_ping(self, ms):
+        self.ping_ms = ms
 
     # -- controls
     def on_vol(self, v):
@@ -1049,13 +1429,19 @@ class App:
 
     def set_muted(self, m):
         self.muted = m
-        self.mute_btn.config(text="Unmute" if m else "Mute")
 
     def toggle_mute(self):
         self.set_muted(not self.muted)
 
+    def hotkey_label(self):
+        if self.capturing:
+            return "PRESS KEYS..."
+        if not keyboard:
+            return "N/A"
+        hk = self.hotkey
+        return "-" if not hk else "+".join(x.capitalize() if len(x) > 1 else x.upper() for x in hk.split("+"))
+
     def apply_hotkey(self, hk):
-        self.hk_btn.config(text=f"Hotkey: {hk}" if keyboard else "Hotkey: unavailable")
         if not keyboard:
             return
         try:
@@ -1064,13 +1450,12 @@ class App:
             self.hk_handle = keyboard.add_hotkey(hk, lambda: self.root.after(0, self.toggle_mute))
             self.hotkey = hk
         except Exception as e:
-            self.hk_btn.config(text="Hotkey: invalid")
             self.status = f"Hotkey error: {e}"
 
     def capture_hotkey(self):
-        if not keyboard:
+        if not keyboard or self.capturing:
             return
-        self.hk_btn.config(text="Press keys...")
+        self.capturing = True
 
         def grab():
             try:
@@ -1082,6 +1467,7 @@ class App:
         threading.Thread(target=grab, daemon=True).start()
 
     def finish_capture(self, hk):
+        self.capturing = False
         self.apply_hotkey(self.hotkey if hk == "esc" else hk)
         self.save()
 
@@ -1096,11 +1482,13 @@ class App:
         self.shown = max(target, self.shown * 0.8)
         if self.shown < 0.01:
             self.shown = 0.0
-        self.slider.set_state(0.0 if self.muted else self.gain, self.shown, self.muted)
-        txt = "Volume 0% (muted)" if self.muted else f"Volume {round(self.gain * 100)}%"
-        if self.vol_label.cget("text") != txt:
-            self.vol_label.config(text=txt)
-        self.status_label.config(text=self.status)
+        now = time.monotonic()
+        if now - self._pk_t >= 1.0:
+            self.pps = round((self.pkts - self._pk_n) / (now - self._pk_t))
+            self._pk_n, self._pk_t = self.pkts, now
+        if not self.streaming:
+            self.pps = 0
+        self.ui.render()
         self.root.after(40, self.poll)
 
     def save(self):
@@ -1122,6 +1510,12 @@ def main():
         i = sys.argv.index("--selftest")
         path = sys.argv[i + 1] if len(sys.argv) > i + 1 else os.path.join(os.path.dirname(CFG_PATH), "UwUMicSelfTest.txt")
         sys.exit(run_selftest(path))
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)  # crisp text instead of a blurry upscaled window
+        except Exception:
+            pass
     root = tk.Tk()
     App(root)
     root.mainloop()

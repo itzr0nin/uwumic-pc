@@ -37,6 +37,13 @@ If it cannot start (for example on Windows on ARM), the box unticks itself, the 
 The GitHub build also tests it inside the finished exe (`UwUMicClient.exe --selftest result.txt`): look at the "Self-test noise
 cancellation" step of the build, or download the `selftest-result` file. "RESULT: OK" means it really works in that exe.
 
+## The window
+Dark "receiver" look: header with connection state, input cards for the phone's IP and port, a big Connect / Disconnect button,
+Noise suppression and Play on speaker options, one bar that is both the volume slider and the live loudness meter (with a dBFS
+readout), Mute and a changeable Hotkey, and a footer with the stream address, packets per second and ping (how fast the phone
+accepted the connection). It is drawn by the app itself (no extra files), scales with Windows display scaling, and uses
+Consolas / Segoe UI / Bahnschrift (Windows 10+), falling back to default fonts if one is missing.
+
 ## Use
 1. Phone: open UwU Mic and tap Start. Note the IP and port it shows.
 2. PC: open UwUMicClient.exe, type the phone's IP and port, press Connect. There is nothing else to choose.
