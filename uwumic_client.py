@@ -39,6 +39,7 @@ DEFAULT_PORT = 8125
 
 CYAN, RED, AMBER, GREY = "#00E5FF", "#FF0A45", "#F5B544", "#6B7280"
 INK_ON_CYAN = "#04121A"
+SPEAKER_NOTE = "Play on speaker is on"
 CONNECTED_TEXT = 'Connected - choose "CABLE Output" as the microphone in your app or game'
 CFG_PATH = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "UwUMicClient.json")
 
@@ -997,7 +998,7 @@ class Ui:
             "chips": (st["streaming"], st["muted"]),
             "cards": (mode, self.focus["ip"], self.focus["port"]),
             "btn": (st["active"],),
-            "opts": (st["nc"], st["mon"]),
+            "opts": (st["nc"], st["mon"], mode == "live"),
             "vol": (st["muted"], st["pct"], self._db_text()),
             "mute": (st["muted"], a.hotkey_label()),
             "foot": (mode, a.status, a.ip.get(), a.port.get(), a.pps, a.ping_ms),
@@ -1087,6 +1088,13 @@ class Ui:
     def _draw_opts(self, st, mode):
         self._check(304, st["nc"], "Noise suppression", "act_nc")
         self._check(334, st["mon"], "Play on speaker", "act_mon")
+        if mode == "live":
+            p = self.p
+            p.rect(318, 292, 566, 346, fill=FIELD, outline=CYAN_EDGE, tags=("opts",))
+            p.oval(330, 311, 346, 327, outline=CYAN, tags=("opts",))
+            p.text(338, 319, "i", CYAN, (F_MONO, 8, "bold"), anchor="c", tags=("opts",))
+            p.text(358, 319, 'Choose "CABLE Output" as the microphone in your app or game', TXT_SOFT, (F_MONO, 8, "normal"),
+                   anchor="w", tags=("opts",), wrap=196)
 
     def _draw_vol(self, st, mode):
         p = self.p
@@ -1129,13 +1137,15 @@ class Ui:
         col = {"live": CYAN, "connecting": AMBER, "off": "#56677D"}[mode]
         p.oval(22, 541, 34, 553, fill=col if mode != "off" else "", outline="#56677D" if mode == "off" else "", tags=("foot",))
         if mode == "live":
-            p.text(46, 538, f"Connected // Receiving stream ({a.ip.get().strip()}:{a.port.get()})", CYAN,
-                   (F_MONO, 9, "bold"), anchor="nw", tags=("foot",))
-            p.text(46, 553, 'Choose "CABLE Output" as the microphone in your app or game', DIMMER,
-                   (F_MONO, 7, "normal"), anchor="nw", tags=("foot",))
+            p.text(46, 547, f"Connected // Receiving stream ({a.ip.get().strip()}:{a.port.get()})", CYAN,
+                   (F_MONO, 9, "bold"), anchor="w", tags=("foot",))
         else:
-            p.text(46, 539, shorten(a.status, 92), TXT_SOFT if mode == "connecting" else DIM, (F_MONO, 9, "bold"),
-                   anchor="nw", tags=("foot",), wrap=330)
+            msg, fnt = shorten(a.status, 92), (F_MONO, 9, "bold")
+            colr = TXT_SOFT if mode == "connecting" else DIM
+            if p.tw(msg, fnt) <= 330:  # fits on one line: centre it on the dot
+                p.text(46, 547, msg, colr, fnt, anchor="w", tags=("foot",))
+            else:
+                p.text(46, 537, msg, colr, fnt, anchor="nw", tags=("foot",), wrap=330)
         ping = f"{a.ping_ms}" if (mode == "live" and a.ping_ms is not None) else "\u2014"
         pk = f"{a.pps}" if mode == "live" else "0"
         parts = [("PACKETS: ", DIM, "normal"), (pk, CYAN, "bold"), (" pkts/s", DIM, "normal"), ("   PING: ", DIM, "normal"),
@@ -1401,7 +1411,6 @@ class App:
         self.noise_cancel = on
         if on:
             self.nc_error = ""  # try again if it failed before
-        self.status = "Noise cancellation ON" if on else "Noise cancellation OFF"
         self.save()
 
     def on_monitor(self):
@@ -1421,10 +1430,9 @@ class App:
                 self.monitor_device = None
         if worked:
             if on:
-                self.status = ("Speaker test ON - you can hear the received voice" if self.sink is not None
-                               else "Speaker test is on - it will play once you connect")
-            elif self.sink is not None:
-                self.status = CONNECTED_TEXT
+                self.status = SPEAKER_NOTE
+            elif self.status == SPEAKER_NOTE:  # switched off: remove our own message, leave anything else alone
+                self.status = "Connecting ..." if self.active else "Disconnected"
         self.save()
 
     def set_muted(self, m):
