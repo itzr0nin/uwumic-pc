@@ -39,7 +39,14 @@ _VK = {"space": 0x20, "enter": 0x0D, "return": 0x0D, "tab": 0x09, "esc": 0x1B, "
        "[": 0xDB, "\\": 0xDC, "]": 0xDD, "'": 0xDE}
 _CANON = ["space", "enter", "tab", "esc", "backspace", "delete", "insert", "home", "end", "pageup", "pagedown",
           "left", "up", "right", "down", "-", "=", ",", ".", ";", "/", "`", "[", "\\", "]", "'"]
+for _i in range(10):
+    _VK[f"num{_i}"] = 0x60 + _i
+_VK.update({"nummul": 0x6A, "numadd": 0x6B, "numsub": 0x6D, "numdec": 0x6E, "numdiv": 0x6F,
+            "pause": 0x13, "printscreen": 0x2C, "menu": 0x5D})
+_CANON += [f"num{i}" for i in range(10)] + ["nummul", "numadd", "numsub", "numdec", "numdiv", "pause", "printscreen", "menu"]
 _NAME_OF = {_VK[n]: n for n in reversed(_CANON)}
+_PRETTY = {"nummul": "Num *", "numadd": "Num +", "numsub": "Num -", "numdec": "Num .", "numdiv": "Num /",
+           "printscreen": "PrtScn", "pageup": "PgUp", "pagedown": "PgDn", "backspace": "Backspace"}
 _MODIFIER_VKS = {0x10, 0x11, 0x12, 0x14, 0x5B, 0x5C, 0x90, 0x91, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5}
 
 
@@ -955,6 +962,14 @@ class Painter:
         return self.c.create_oval(x1 * S, y1 * S, x2 * S, y2 * S, fill=fill, outline=outline,
                                   width=self._w(width) if outline else 0, tags=tags)
 
+    def fit(self, s, font, max_w):
+        """The text, cut with an ellipsis if it would be wider than max_w (logical units)."""
+        if self.tw(s, font) <= max_w:
+            return s
+        while len(s) > 1 and self.tw(s + "\u2026", font) > max_w:
+            s = s[:-1]
+        return s.rstrip() + "\u2026"
+
     def tw(self, s, font, track=0):
         """Width of a text in logical units."""
         return self.measure(font, s) / self.S + track * max(0, len(s) - 1)
@@ -1129,7 +1144,7 @@ class Ui:
             "chips": (st["streaming"], st["muted"]),
             "cards": (mode, self.focus["ip"], self.focus["port"]),
             "btn": (st["active"],),
-            "opts": (st["nc"], st["mon"], mode == "live"),
+            "opts": (st["nc"], st["mon"]),
             "vol": (st["muted"], st["pct"], self._db_text()),
             "mute": (st["muted"], a.hotkey_label()),
             "foot": (mode, a.status, a.ip.get(), a.port.get(), a.pps, a.ping_ms),
@@ -1219,13 +1234,12 @@ class Ui:
     def _draw_opts(self, st, mode):
         self._check(304, st["nc"], "Noise suppression", "act_nc")
         self._check(334, st["mon"], "Play on speaker", "act_mon")
-        if mode == "live":
-            p = self.p
-            p.rect(318, 292, 566, 346, fill=FIELD, outline=CYAN_EDGE, tags=("opts",))
-            p.oval(330, 311, 346, 327, outline=CYAN, tags=("opts",))
-            p.text(338, 319, "i", CYAN, (F_MONO, 8, "bold"), anchor="c", tags=("opts",))
-            p.text(358, 319, 'Choose "CABLE Output" as the microphone in your app or game', TXT_SOFT, (F_MONO, 8, "normal"),
-                   anchor="w", tags=("opts",), wrap=196)
+        p = self.p
+        p.rect(318, 292, 566, 346, fill=FIELD, outline=CYAN_EDGE, tags=("opts",))
+        p.oval(330, 311, 346, 327, outline=CYAN, tags=("opts",))
+        p.text(338, 319, "i", CYAN, (F_MONO, 8, "bold"), anchor="c", tags=("opts",))
+        p.text(358, 319, 'Choose "CABLE Output" as the microphone in your app or game', TXT_SOFT, (F_MONO, 8, "normal"),
+               anchor="w", tags=("opts",), wrap=196)
 
     def _draw_vol(self, st, mode):
         p = self.p
@@ -1267,25 +1281,38 @@ class Ui:
         p, a = self.p, self.app
         col = {"live": CYAN, "connecting": AMBER, "off": "#56677D"}[mode]
         p.oval(22, 541, 34, 553, fill=col if mode != "off" else "", outline="#56677D" if mode == "off" else "", tags=("foot",))
-        if mode == "live":
-            p.text(46, 547, f"Connected // Receiving stream ({a.ip.get().strip()}:{a.port.get()})", CYAN,
-                   (F_MONO, 9, "bold"), anchor="w", tags=("foot",))
-        else:
-            msg, fnt = shorten(a.status, 92), (F_MONO, 9, "bold")
-            colr = TXT_SOFT if mode == "connecting" else DIM
-            if p.tw(msg, fnt) <= 330:  # fits on one line: centre it on the dot
-                p.text(46, 547, msg, colr, fnt, anchor="w", tags=("foot",))
-            else:
-                p.text(46, 537, msg, colr, fnt, anchor="nw", tags=("foot",), wrap=330)
         ping = f"{a.ping_ms}" if (mode == "live" and a.ping_ms is not None) else "\u2014"
         pk = f"{a.pps}" if mode == "live" else "0"
         parts = [("PACKETS: ", DIM, "normal"), (pk, CYAN, "bold"), (" pkts/s", DIM, "normal"), ("   PING: ", DIM, "normal"),
                  (ping, CYAN, "bold"), (" ms", DIM, "normal")]
         f = lambda wt: (F_MONO, 8, wt)
         total = sum(p.tw(s, f(wt)) for s, _, wt in parts)
+        room = 580 - total - 16 - 46  # what is left for the message once the stats on the right have their space
+        fnt = (F_MONO, 9, "bold")
+        if mode == "live":
+            msg = p.fit(f"Connected // {a.ip.get().strip()}:{a.port.get()}", fnt, room)
+            p.text(46, 547, msg, CYAN, fnt, anchor="w", tags=("foot",))
+        else:
+            msg, colr = shorten(a.status, 92), TXT_SOFT if mode == "connecting" else DIM
+            if p.tw(msg, fnt) <= room:  # fits on one line: centre it on the dot
+                p.text(46, 547, msg, colr, fnt, anchor="w", tags=("foot",))
+            else:  # two lines at most, never reaching the stats
+                lines, cur = [], ""
+                for word in msg.split(" "):
+                    t = (cur + " " + word).strip()
+                    if p.tw(t, fnt) <= room or not cur:
+                        cur = t
+                    else:
+                        lines.append(cur)
+                        cur = word
+                lines.append(cur)
+                lines = lines[:2]
+                lines[-1] = p.fit(lines[-1], fnt, room)
+                for i, line in enumerate(lines):
+                    p.text(46, 539 + i * 15 - (7 if len(lines) == 2 else 0), line, colr, fnt, anchor="w", tags=("foot",))
         x = 580 - total
-        for s, colr, wt in parts:
-            x += p.text(x, 547, s, colr, f(wt), tags=("foot",))
+        for s_, colr, wt in parts:
+            x += p.text(x, 547, s_, colr, f(wt), tags=("foot",))
 
 
 # ----------------------------------------------------------------- GUI
@@ -1457,7 +1484,7 @@ class App:
         self.setup_tries = 0
         self.save()
         self.load_devices()
-        self.status = "Virtual microphone installed. In Discord or your game, choose CABLE Output as the microphone."
+        self.status = "Virtual microphone installed"
 
     # -- connection
     def set_status(self, text):
@@ -1580,7 +1607,19 @@ class App:
         hk = self.hotkey
         if not hk or not self.hotkey_ok:
             return "-" if not hk else "N/A"
-        return "+".join(x.capitalize() if len(x) > 1 else x.upper() for x in hk.split("+"))
+
+        def pretty(x):
+            m = re.fullmatch(r"vk(\d{1,3})", x)
+            if m:  # older saved hotkeys: show the key's real name when we have one
+                x = vk_to_name(int(m.group(1))) or x
+            if x in _PRETTY:
+                return _PRETTY[x]
+            m = re.fullmatch(r"num(\d)", x)
+            if m:
+                return f"Num {m.group(1)}"
+            return x.capitalize() if len(x) > 1 else x.upper()
+
+        return "+".join(pretty(x) for x in hk.split("+"))
 
     def apply_hotkey(self, hk):
         previous = self.hotkey if self.hotkey_ok else None
