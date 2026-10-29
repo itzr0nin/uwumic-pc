@@ -8,6 +8,7 @@ into the output device you choose. Pick "CABLE Input" (VB-Cable) and then select
 import datetime
 import json
 import math
+import re
 import os
 import socket
 import struct
@@ -23,10 +24,140 @@ import zipfile
 import tkinter as tk
 from tkinter import messagebox
 
-try:
-    import keyboard  # global hotkeys (Windows)
-except Exception:  # pragma: no cover
-    keyboard = None
+# ----------------------------------------------------------------- global hotkey (Windows RegisterHotKey)
+# Windows' own "register this key combination" call. It only gets told about the one combination you chose; it does
+# not watch every keystroke the way a keyboard hook does (which is what antivirus programs flag as a keylogger).
+WM_HOTKEY = 0x0312
+MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, MOD_NOREPEAT = 0x1, 0x2, 0x4, 0x8, 0x4000
+_MODS = {"ctrl": MOD_CONTROL, "control": MOD_CONTROL, "alt": MOD_ALT, "shift": MOD_SHIFT,
+         "win": MOD_WIN, "windows": MOD_WIN}
+_VK = {"space": 0x20, "enter": 0x0D, "return": 0x0D, "tab": 0x09, "esc": 0x1B, "escape": 0x1B, "backspace": 0x08,
+       "delete": 0x2E, "del": 0x2E, "insert": 0x2D, "ins": 0x2D, "home": 0x24, "end": 0x23,
+       "pageup": 0x21, "page up": 0x21, "pgup": 0x21, "pagedown": 0x22, "page down": 0x22, "pgdn": 0x22,
+       "left": 0x25, "up": 0x26, "right": 0x27, "down": 0x28,
+       "-": 0xBD, "=": 0xBB, "+": 0xBB, "plus": 0xBB, ",": 0xBC, ".": 0xBE, ";": 0xBA, "/": 0xBF, "`": 0xC0,
+       "[": 0xDB, "\\": 0xDC, "]": 0xDD, "'": 0xDE}
+_CANON = ["space", "enter", "tab", "esc", "backspace", "delete", "insert", "home", "end", "pageup", "pagedown",
+          "left", "up", "right", "down", "-", "=", ",", ".", ";", "/", "`", "[", "\\", "]", "'"]
+_NAME_OF = {_VK[n]: n for n in reversed(_CANON)}
+_MODIFIER_VKS = {0x10, 0x11, 0x12, 0x14, 0x5B, 0x5C, 0x90, 0x91, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5}
+
+
+def parse_hotkey(text):
+    """'ctrl+shift+m' -> (modifier flags, virtual-key code). Raises ValueError when it can't be understood."""
+    t = (text or "").strip().lower()
+    if not t:
+        raise ValueError("no key chosen")
+    parts = [t]
+    if len(t) > 1:
+        parts = t[:-2].split("+") + ["+"] if t.endswith("++") else t.split("+")
+    mods, key = 0, None
+    for part in (x.strip() for x in parts):
+        if not part:
+            continue
+        if part in _MODS:
+            mods |= _MODS[part]
+        elif key is not None:
+            raise ValueError("only one normal key is allowed")
+        else:
+            key = part
+    if key is None:
+        raise ValueError("a hotkey needs a key as well as modifiers")
+    vk = _VK.get(key)
+    if vk is None:
+        if len(key) == 1 and key.isascii() and key.isalnum():
+            vk = ord(key.upper())
+        elif re.fullmatch(r"f([1-9]|1\d|2[0-4])", key):
+            vk = 0x70 + int(key[1:]) - 1
+        elif re.fullmatch(r"vk\d{1,3}", key) and 0 < int(key[2:]) < 255:
+            vk = int(key[2:])
+        else:
+            raise ValueError(f"unsupported key '{key}'")
+    return mods, vk
+
+
+def vk_to_name(vk):
+    """Windows virtual-key code -> the name used in saved hotkeys (None for modifier keys)."""
+    if vk in _MODIFIER_VKS:
+        return None
+    if 0x30 <= vk <= 0x39 or 0x41 <= vk <= 0x5A:
+        return chr(vk).lower()
+    if 0x70 <= vk <= 0x87:
+        return f"f{vk - 0x6F}"
+    return _NAME_OF.get(vk) or (f"vk{vk}" if 0 < vk < 255 else None)
+
+
+class _Win32:
+    """The few Windows calls the hotkey needs."""
+
+    def __init__(self):
+        import ctypes
+        from ctypes import wintypes
+        self.u, self.k, self.ct = ctypes.windll.user32, ctypes.windll.kernel32, ctypes
+        self.msg = wintypes.MSG()
+
+    def thread_id(self):
+        return self.k.GetCurrentThreadId()
+
+    def make_queue(self):
+        self.u.PeekMessageW(self.ct.byref(self.msg), None, 0, 0, 0)
+
+    def register(self, ident, mods, vk):
+        return bool(self.u.RegisterHotKey(None, ident, mods, vk))
+
+    def get_message(self):
+        r = self.u.GetMessageW(self.ct.byref(self.msg), None, 0, 0)
+        return 0 if r in (0, -1) else self.msg.message
+
+    def unregister(self, ident):
+        self.u.UnregisterHotKey(None, ident)
+
+    def post_quit(self, tid):
+        self.u.PostThreadMessageW(tid, 0x0012, 0, 0)
+
+
+class HotkeyManager:
+    """One global hotkey on its own thread. set() replaces it; stop() removes it."""
+
+    def __init__(self, callback, api=None):
+        self.callback, self.api = callback, api
+        self.thread = self.tid = None
+
+    def set(self, text):
+        mods, vk = parse_hotkey(text)
+        if self.api is None:
+            self.api = _Win32()
+        self.stop()
+        api, ready, result = self.api, threading.Event(), {}
+
+        def run():
+            result["tid"] = api.thread_id()
+            api.make_queue()
+            result["ok"] = api.register(1, mods | MOD_NOREPEAT, vk)
+            ready.set()
+            if not result["ok"]:
+                return
+            while True:
+                m = api.get_message()
+                if m == WM_HOTKEY:
+                    self.callback()
+                elif m == 0:
+                    break
+            api.unregister(1)
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        ready.wait(3)
+        self.thread, self.tid = t, result.get("tid")
+        if not result.get("ok"):
+            raise OSError("that key combination is already used by another program")
+
+    def stop(self):
+        t, tid, self.thread, self.tid = self.thread, self.tid, None, None
+        if t is not None and tid is not None and self.api is not None:
+            self.api.post_quit(tid)
+            t.join(2)
+
 
 def resource(name):
     base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
@@ -1188,7 +1319,8 @@ class App:
         self.status = "Idle"
         self.stop = threading.Event()
         self.hotkey = cfg.get("hotkey", "ctrl+shift+m")
-        self.hk_handle = None
+        self.hotkeys = HotkeyManager(lambda: self.root.after(0, self.toggle_mute))
+        self.hotkey_ok = False
 
         self.ip = tk.StringVar(value=cfg.get("ip", ""))
         self.port = tk.StringVar(value=str(cfg.get("port", DEFAULT_PORT)))
@@ -1205,6 +1337,7 @@ class App:
         self.ui = Ui(root, self)
 
         self.apply_hotkey(self.hotkey)
+        root.bind("<KeyPress>", self._on_key, add="+")
         root.protocol("WM_DELETE_WINDOW", self.close)
         self.poll()
         if self.needs_setup():
@@ -1444,40 +1577,56 @@ class App:
     def hotkey_label(self):
         if self.capturing:
             return "PRESS KEYS..."
-        if not keyboard:
-            return "N/A"
         hk = self.hotkey
-        return "-" if not hk else "+".join(x.capitalize() if len(x) > 1 else x.upper() for x in hk.split("+"))
+        if not hk or not self.hotkey_ok:
+            return "-" if not hk else "N/A"
+        return "+".join(x.capitalize() if len(x) > 1 else x.upper() for x in hk.split("+"))
 
     def apply_hotkey(self, hk):
-        if not keyboard:
-            return
+        previous = self.hotkey if self.hotkey_ok else None
         try:
-            if self.hk_handle is not None:
-                keyboard.remove_hotkey(self.hk_handle)
-            self.hk_handle = keyboard.add_hotkey(hk, lambda: self.root.after(0, self.toggle_mute))
-            self.hotkey = hk
+            self.hotkeys.set(hk)
+            self.hotkey, self.hotkey_ok = hk, True
         except Exception as e:
-            self.status = f"Hotkey error: {e}"
+            self.hotkey_ok = False
+            self.status = f"Hotkey '{hk}' could not be set: {e}"
+            if previous and previous != hk:  # keep the old one working
+                try:
+                    self.hotkeys.set(previous)
+                    self.hotkey, self.hotkey_ok = previous, True
+                except Exception:
+                    pass
 
     def capture_hotkey(self):
-        if not keyboard or self.capturing:
+        if self.capturing:
             return
         self.capturing = True
+        try:
+            self.ui.c.focus_set()  # take the keyboard away from the IP / port boxes
+        except Exception:
+            pass
+        self.root.after(8000, self._cancel_capture)  # give up if nothing is pressed
 
-        def grab():
-            try:
-                hk = keyboard.read_hotkey(suppress=False)
-            except Exception:
-                hk = "esc"
-            self.root.after(0, lambda: self.finish_capture(hk))
+    def _cancel_capture(self):
+        if self.capturing:
+            self.capturing = False
 
-        threading.Thread(target=grab, daemon=True).start()
-
-    def finish_capture(self, hk):
+    def _on_key(self, event):
+        """While 'Hotkey' is waiting for a key combination, take the next normal key as the new hotkey."""
+        if not self.capturing:
+            return None
+        vk = getattr(event, "keycode", 0)
+        if vk in _MODIFIER_VKS:
+            return "break"  # wait for the real key
+        name = vk_to_name(vk)
         self.capturing = False
-        self.apply_hotkey(self.hotkey if hk == "esc" else hk)
+        if name is None or name == "esc":
+            return "break"
+        state = getattr(event, "state", 0)
+        mods = [n for n, bit in (("ctrl", 0x4), ("alt", 0x20000), ("shift", 0x1)) if state & bit]
+        self.apply_hotkey("+".join(mods + [name]))
         self.save()
+        return "break"
 
     # -- housekeeping
     def poll(self):
@@ -1509,6 +1658,7 @@ class App:
 
     def close(self):
         self.stop.set()
+        self.hotkeys.stop()
         self.save()
         self.root.destroy()
 

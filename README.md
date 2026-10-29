@@ -44,6 +44,21 @@ readout), Mute and a changeable Hotkey, and a footer with the stream address, pa
 accepted the connection). It is drawn by the app itself (no extra files), scales with Windows display scaling, and uses
 Consolas / Segoe UI / Bahnschrift (Windows 10+), falling back to default fonts if one is missing.
 
+## Windows says it is a virus (false alarm)
+Windows Defender often flags new, unsigned programs made with PyInstaller (typical names: "Trojan:Win32/Wacatac.B!ml" or
+anything ending in "!ml", which means a guess by machine learning, not a known virus). To keep UwU Mic from being deleted:
+1. Windows Security > Virus & threat protection > Protection history: open the entry and choose Actions > Allow on device
+   (or Restore). Note the threat name and send it with any question.
+2. Windows Security > Virus & threat protection > Manage settings > Exclusions > Add an exclusion > Folder: pick the folder you
+   unzipped UwU Mic into.
+3. Optional, helps everyone: send the file to Microsoft at https://www.microsoft.com/en-us/wdsi/filesubmission
+   (choose "Software developer", say it is a false positive).
+To make it look less suspicious the app: registers its hotkey with Windows' RegisterHotKey instead of watching every keystroke,
+ships as a folder instead of a self-unpacking single exe, has proper file details, and leaves out unused audio-file code.
+A code-signing certificate is the only complete fix; unsigned apps will always get extra scrutiny.
+It does two things that scanners watch for: it downloads and starts the VB-Cable installer (with Windows' permission prompt), and
+it asks PowerShell to check that installer's signature.
+
 ## Use
 1. Phone: open UwU Mic and tap Start. Note the IP and port it shows.
 2. PC: open UwUMicClient.exe, type the phone's IP and port, press Connect. There is nothing else to choose.
@@ -57,7 +72,7 @@ If you still hear yourself without ticking it, Windows may be monitoring the cab
 
 One button connects and disconnects. The bar is the loudness meter and the volume slider in one: the bright fill is how loud the
 phone is, the hexagon handle is the volume (0-100%). Mute moves the handle to 0 and empties the meter. A global changeable hotkey
-(click the hotkey button, press your keys) toggles mute.
+(click the hotkey button, then press the keys you want while the window is open) toggles mute.
 If Windows SmartScreen warns about an unknown publisher: More info > Run anyway.
 
 ## How to build the EXE
