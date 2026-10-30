@@ -1296,20 +1296,22 @@ class Ui:
             msg, colr = shorten(a.status, 92), TXT_SOFT if mode == "connecting" else DIM
             if p.tw(msg, fnt) <= room:  # fits on one line: centre it on the dot
                 p.text(46, 547, msg, colr, fnt, anchor="w", tags=("foot",))
-            else:  # two lines at most, never reaching the stats
+            else:  # two smaller lines that sit inside the footer (never touching the line above it)
+                small = (F_MONO, 8, "bold")
                 lines, cur = [], ""
                 for word in msg.split(" "):
                     t = (cur + " " + word).strip()
-                    if p.tw(t, fnt) <= room or not cur:
+                    if p.tw(t, small) <= room or not cur:
                         cur = t
                     else:
                         lines.append(cur)
                         cur = word
                 lines.append(cur)
                 lines = lines[:2]
-                lines[-1] = p.fit(lines[-1], fnt, room)
-                for i, line in enumerate(lines):
-                    p.text(46, 539 + i * 15 - (7 if len(lines) == 2 else 0), line, colr, fnt, anchor="w", tags=("foot",))
+                lines[-1] = p.fit(lines[-1], small, room)
+                ys = (547,) if len(lines) == 1 else (541, 553)
+                for line, y in zip(lines, ys):
+                    p.text(46, y, line, colr, small, anchor="w", tags=("foot",))
         x = 580 - total
         for s_, colr, wt in parts:
             x += p.text(x, 547, s_, colr, f(wt), tags=("foot",))
