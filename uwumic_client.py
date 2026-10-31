@@ -166,6 +166,272 @@ class HotkeyManager:
             t.join(2)
 
 
+# ----------------------------------------------------------------- tray icon (Windows notification area)
+import ctypes as _ct
+
+WM_APP_TRAY = 0x8001
+NIM_ADD, NIM_MODIFY, NIM_DELETE = 0, 1, 2
+NIF_MESSAGE, NIF_ICON, NIF_TIP = 1, 2, 4
+WM_LBUTTONUP, WM_LBUTTONDBLCLK, WM_RBUTTONUP = 0x0202, 0x0203, 0x0205
+MF_STRING, MF_GRAYED, MF_SEPARATOR = 0x0, 0x1, 0x800
+TPM_RIGHTBUTTON, TPM_RETURNCMD = 0x2, 0x100
+
+
+class NOTIFYICONDATA(_ct.Structure):
+    """NOTIFYICONDATAW with explicit sizes (so its layout is the same wherever it is built)."""
+    _fields_ = [("cbSize", _ct.c_uint32), ("hWnd", _ct.c_void_p), ("uID", _ct.c_uint32), ("uFlags", _ct.c_uint32),
+                ("uCallbackMessage", _ct.c_uint32), ("hIcon", _ct.c_void_p), ("szTip", _ct.c_uint16 * 128),
+                ("dwState", _ct.c_uint32), ("dwStateMask", _ct.c_uint32), ("szInfo", _ct.c_uint16 * 256),
+                ("uTimeout", _ct.c_uint32), ("szInfoTitle", _ct.c_uint16 * 64), ("dwInfoFlags", _ct.c_uint32),
+                ("guidItem", _ct.c_ubyte * 16), ("hBalloonIcon", _ct.c_void_p)]
+
+
+class WNDCLASS(_ct.Structure):
+    _fields_ = [("style", _ct.c_uint32), ("lpfnWndProc", _ct.c_void_p), ("cbClsExtra", _ct.c_int),
+                ("cbWndExtra", _ct.c_int), ("hInstance", _ct.c_void_p), ("hIcon", _ct.c_void_p),
+                ("hCursor", _ct.c_void_p), ("hbrBackground", _ct.c_void_p), ("lpszMenuName", _ct.c_wchar_p),
+                ("lpszClassName", _ct.c_wchar_p)]
+
+
+def put_wide(array, text):
+    """Fill a fixed-size UTF-16 array (a Windows WCHAR buffer) with text; the rest is zeros, so it always ends in a zero."""
+    raw = text.encode("utf-16-le")
+    units = [raw[i] | (raw[i + 1] << 8) for i in range(0, len(raw), 2)][: len(array) - 1]
+    units += [0] * (len(array) - len(units))
+    for i, u in enumerate(units):
+        array[i] = u
+
+
+class _WinTray:
+    """The Windows calls behind the tray icon: a hidden window that receives the icon's mouse clicks."""
+
+    def __init__(self):
+        from ctypes import wintypes
+        ct = _ct
+        self.wt = wintypes
+        self.u = ct.WinDLL("user32", use_last_error=True)
+        self.s = ct.WinDLL("shell32", use_last_error=True)
+        self.k = ct.WinDLL("kernel32", use_last_error=True)
+        LRESULT = ct.c_ssize_t
+        self.WNDPROC = ct.WINFUNCTYPE(LRESULT, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+        u, k, s = self.u, self.k, self.s
+        k.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+        k.GetModuleHandleW.restype = ct.c_void_p
+        u.RegisterClassW.argtypes = [ct.POINTER(WNDCLASS)]
+        u.RegisterClassW.restype = wintypes.ATOM
+        u.CreateWindowExW.argtypes = [wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
+                                      ct.c_int, ct.c_int, ct.c_int, ct.c_int, ct.c_void_p, ct.c_void_p,
+                                      ct.c_void_p, ct.c_void_p]
+        u.CreateWindowExW.restype = ct.c_void_p
+        u.DefWindowProcW.argtypes = [ct.c_void_p, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+        u.DefWindowProcW.restype = LRESULT
+        u.GetMessageW.argtypes = [ct.POINTER(wintypes.MSG), ct.c_void_p, wintypes.UINT, wintypes.UINT]
+        u.GetMessageW.restype = ct.c_int
+        u.TranslateMessage.argtypes = [ct.POINTER(wintypes.MSG)]
+        u.DispatchMessageW.argtypes = [ct.POINTER(wintypes.MSG)]
+        u.DispatchMessageW.restype = LRESULT
+        u.PostQuitMessage.argtypes = [ct.c_int]
+        u.PostMessageW.argtypes = [ct.c_void_p, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+        u.RegisterWindowMessageW.argtypes = [wintypes.LPCWSTR]
+        u.RegisterWindowMessageW.restype = wintypes.UINT
+        u.LoadImageW.argtypes = [ct.c_void_p, wintypes.LPCWSTR, wintypes.UINT, ct.c_int, ct.c_int, wintypes.UINT]
+        u.LoadImageW.restype = ct.c_void_p
+        u.GetSystemMetrics.argtypes = [ct.c_int]
+        u.CreatePopupMenu.restype = ct.c_void_p
+        u.AppendMenuW.argtypes = [ct.c_void_p, wintypes.UINT, ct.c_size_t, wintypes.LPCWSTR]
+        u.TrackPopupMenu.argtypes = [ct.c_void_p, wintypes.UINT, ct.c_int, ct.c_int, ct.c_int, ct.c_void_p, ct.c_void_p]
+        u.TrackPopupMenu.restype = ct.c_int
+        u.DestroyMenu.argtypes = [ct.c_void_p]
+        u.GetCursorPos.argtypes = [ct.POINTER(wintypes.POINT)]
+        u.SetForegroundWindow.argtypes = [ct.c_void_p]
+        s.Shell_NotifyIconW.argtypes = [wintypes.DWORD, ct.POINTER(NOTIFYICONDATA)]
+        s.Shell_NotifyIconW.restype = wintypes.BOOL
+        self.hwnd = self.hicon = None
+        self.tip = ""
+        self._proc = None
+
+    def create(self, icon_path, tip, on_event):
+        ct, u = _ct, self.u
+        self.on_event, self.tip = on_event, tip
+        self._proc = self.WNDPROC(self._wndproc)  # kept on self so it is not garbage collected
+        hinst = self.k.GetModuleHandleW(None)
+        cls = WNDCLASS()
+        cls.lpfnWndProc = ct.cast(self._proc, ct.c_void_p).value
+        cls.hInstance = hinst
+        cls.lpszClassName = "UwUMicTrayWindow"
+        if not u.RegisterClassW(ct.byref(cls)) and ct.get_last_error() != 1410:  # 1410 = class already exists
+            raise OSError(f"RegisterClass failed ({ct.get_last_error()})")
+        self.hwnd = u.CreateWindowExW(0, "UwUMicTrayWindow", "UwU Mic", 0, 0, 0, 0, 0, -3, None, hinst, None)  # -3 = message-only
+        if not self.hwnd:
+            raise OSError(f"CreateWindow failed ({ct.get_last_error()})")
+        self.taskbar_msg = u.RegisterWindowMessageW("TaskbarCreated")  # sent again if Explorer restarts
+        size = u.GetSystemMetrics(49) or 16  # SM_CXSMICON
+        self.hicon = u.LoadImageW(None, icon_path, 1, size, size, 0x10)  # IMAGE_ICON, LR_LOADFROMFILE
+        if not self.hicon:
+            raise OSError(f"could not load the icon ({ct.get_last_error()})")
+        if not self._notify(NIM_ADD):
+            raise OSError("Shell_NotifyIcon refused to add the icon")
+
+    def _data(self):
+        nid = NOTIFYICONDATA()
+        nid.cbSize = _ct.sizeof(NOTIFYICONDATA)
+        nid.hWnd = self.hwnd
+        nid.uID = 1
+        nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP
+        nid.uCallbackMessage = WM_APP_TRAY
+        nid.hIcon = self.hicon
+        put_wide(nid.szTip, self.tip)
+        return nid
+
+    def _notify(self, message):
+        return bool(self.s.Shell_NotifyIconW(message, _ct.byref(self._data())))
+
+    def _wndproc(self, hwnd, msg, wparam, lparam):
+        try:
+            if msg == WM_APP_TRAY:
+                ev = lparam & 0xFFFF
+                if ev in (WM_LBUTTONUP, WM_LBUTTONDBLCLK):
+                    self.on_event("left")
+                elif ev == WM_RBUTTONUP:
+                    self.on_event("right")
+                return 0
+            if msg == self.taskbar_msg and self.taskbar_msg:
+                self._notify(NIM_ADD)
+                return 0
+            if msg == 0x0002:  # WM_DESTROY
+                self._notify(NIM_DELETE)
+                self.u.PostQuitMessage(0)
+                return 0
+        except Exception:
+            log("tray: " + traceback.format_exc())
+        return self.u.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+    def popup(self, items):
+        """items = [(id, text, enabled)], id 0 = separator. Shows the menu at the mouse; returns the chosen id or 0."""
+        u, wt = self.u, self.wt
+        menu = u.CreatePopupMenu()
+        try:
+            for ident, text, enabled in items:
+                if ident == 0:
+                    u.AppendMenuW(menu, MF_SEPARATOR, 0, None)
+                else:
+                    u.AppendMenuW(menu, MF_STRING | (0 if enabled else MF_GRAYED), ident, text)
+            pt = wt.POINT()
+            u.GetCursorPos(_ct.byref(pt))
+            u.SetForegroundWindow(self.hwnd)  # without this the menu would not close when you click elsewhere
+            cmd = u.TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD, pt.x, pt.y, 0, self.hwnd, None)
+            u.PostMessageW(self.hwnd, 0, 0, 0)  # WM_NULL
+            return cmd
+        finally:
+            u.DestroyMenu(menu)
+
+    def loop(self):
+        msg = self.wt.MSG()
+        while self.u.GetMessageW(_ct.byref(msg), None, 0, 0) > 0:
+            self.u.TranslateMessage(_ct.byref(msg))
+            self.u.DispatchMessageW(_ct.byref(msg))
+
+    def update_tip(self, text):
+        self.tip = text
+        self._notify(NIM_MODIFY)
+
+    def remove(self):
+        if self.hwnd:
+            self._notify(NIM_DELETE)  # take the icon away right now so no ghost icon is left behind
+
+    def stop(self):
+        if self.hwnd:
+            self.u.PostMessageW(self.hwnd, 0x0010, 0, 0)  # WM_CLOSE -> the hidden window is destroyed
+
+
+class TrayIcon:
+    """The icon by the clock. Left click shows the window; right click: Connect, Disconnect, Mute/Unmute, Exit."""
+
+    def __init__(self, app, api=None):
+        self.app, self.api = app, api
+        self.ok = False
+        self.thread = None
+        self.tip = ""
+
+    def start(self, icon_path):
+        try:
+            if self.api is None:
+                self.api = _WinTray()
+        except Exception:
+            log("tray unavailable: " + traceback.format_exc())
+            return False
+        ready, res = threading.Event(), {}
+
+        def run():
+            try:
+                self.api.create(icon_path, "UwU Mic", self._event)
+                res["ok"] = True
+            except Exception:
+                res["ok"] = False
+                log("tray could not be created: " + traceback.format_exc())
+            ready.set()
+            if res["ok"]:
+                try:
+                    self.api.loop()
+                except Exception:
+                    log("tray loop: " + traceback.format_exc())
+                self.ok = False
+
+        self.thread = threading.Thread(target=run, daemon=True)
+        self.thread.start()
+        ready.wait(3)
+        self.ok = bool(res.get("ok"))
+        return self.ok
+
+    def menu(self):
+        a = self.app
+        return [(1, "Connect", not a.active), (2, "Disconnect", bool(a.active)),
+                (3, "Unmute" if a.muted else "Mute", True), (0, "", False), (4, "Exit", True)]
+
+    def _event(self, kind):  # runs on the tray thread, so hand real work to the window's thread
+        a = self.app
+        if kind == "left":
+            a.root.after(0, a.show_window)
+        elif kind == "right":
+            choice = self.api.popup(self.menu())
+            action = {1: a.tray_connect, 2: a.tray_disconnect, 3: a.toggle_mute, 4: a.quit_app}.get(choice)
+            if action:
+                a.root.after(0, action)
+
+    def set_tip(self, text):
+        if self.ok and text != self.tip:
+            self.tip = text
+            try:
+                self.api.update_tip(text)
+            except Exception:
+                pass
+
+    def stop(self):
+        if self.ok:
+            try:
+                self.api.remove()
+                self.api.stop()
+            except Exception:
+                pass
+        self.ok = False
+
+
+def already_running():
+    """True if another UwU Mic Client is already running (so closing to the tray never leaves two copies)."""
+    if sys.platform != "win32":
+        return False
+    try:
+        k = _ct.WinDLL("kernel32", use_last_error=True)
+        k.CreateMutexW.argtypes = [_ct.c_void_p, _ct.c_int, _ct.c_wchar_p]
+        k.CreateMutexW.restype = _ct.c_void_p
+        handle = k.CreateMutexW(None, 0, "Local\\UwUMicClientSingleInstance")
+        already = _ct.get_last_error() == 183  # ERROR_ALREADY_EXISTS
+        already_running.handle = handle  # keep it open for as long as we run
+        return already
+    except Exception:
+        return False
+
+
 def resource(name):
     base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, name)
@@ -1367,7 +1633,10 @@ class App:
 
         self.apply_hotkey(self.hotkey)
         root.bind("<KeyPress>", self._on_key, add="+")
-        root.protocol("WM_DELETE_WINDOW", self.close)
+        root.protocol("WM_DELETE_WINDOW", self.on_close_button)
+        self.tray = TrayIcon(self)
+        if sys.platform == "win32":
+            self.tray.start(resource("uwumic.ico"))
         self.poll()
         if self.needs_setup():
             root.after(800, self.first_run_setup)
@@ -1687,6 +1956,8 @@ class App:
         if not self.streaming:
             self.pps = 0
         self.ui.render()
+        self.tray.set_tip("UwU Mic - " + ("Muted" if self.muted and self.streaming else "Connected" if self.streaming
+                                           else "Connecting..." if self.active else "Disconnected"))
         self.root.after(40, self.poll)
 
     def save(self):
@@ -1697,7 +1968,40 @@ class App:
         except Exception:
             pass
 
+    # -- tray
+    def on_close_button(self):
+        """X in the title bar: hide to the tray (or really close if there is no tray icon to come back from)."""
+        if self.tray.ok:
+            self.root.withdraw()
+        else:
+            self.close()
+
+    def show_window(self):
+        self.root.deiconify()
+        try:
+            self.root.state("normal")
+        except Exception:
+            pass
+        self.root.lift()
+        self.root.focus_force()
+
+    def tray_connect(self):
+        if self.active:
+            return
+        if not self.ip.get().strip():  # nothing to connect to yet: bring the window back so the address can be typed
+            self.show_window()
+            return
+        self.connect()
+
+    def tray_disconnect(self):
+        if self.active:
+            self.disconnect()
+
+    def quit_app(self):
+        self.close()
+
     def close(self):
+        self.tray.stop()
         self.stop.set()
         self.hotkeys.stop()
         self.save()
@@ -1715,6 +2019,12 @@ def main():
             ctypes.windll.shcore.SetProcessDpiAwareness(1)  # crisp text instead of a blurry upscaled window
         except Exception:
             pass
+    if already_running():
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showinfo("UwU Mic", "UwU Mic is already running.\n\nLook for its icon next to the clock (click the ^ arrow "
+                                       "if you do not see it) and click it to open the window.")
+        return
     root = tk.Tk()
     App(root)
     root.mainloop()

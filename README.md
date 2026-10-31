@@ -59,6 +59,13 @@ A code-signing certificate is the only complete fix; unsigned apps will always g
 It does two things that scanners watch for: it downloads and starts the VB-Cable installer (with Windows' permission prompt), and
 it asks PowerShell to check that installer's signature.
 
+## Tray icon
+The X button in the title bar hides UwU Mic to the notification area (next to the clock; click the ^ arrow if you do not see it)
+and it keeps running, so your microphone stays connected. Left click the tray icon to bring the window back. Right click it for:
+Connect, Disconnect, Mute / Unmute and Exit. Exit really quits (the only way to fully close it). Connect from the tray needs an IP
+address to be typed in the window already; otherwise it just opens the window. Starting UwU Mic a second time shows a message
+instead of opening a second copy. If Windows cannot create the tray icon, the X button simply closes the app as usual.
+
 ## Use
 1. Phone: open UwU Mic and tap Start. Note the IP and port it shows.
 2. PC: open UwUMicClient.exe, type the phone's IP and port, press Connect. There is nothing else to choose.
