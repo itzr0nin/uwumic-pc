@@ -38,9 +38,11 @@ The GitHub build also tests it inside the finished exe (`UwUMicClient.exe --self
 cancellation" step of the build, or download the `selftest-result` file. "RESULT: OK" means it really works in that exe.
 
 ## The window
-Dark "receiver" look: header with connection state, input cards for the phone's IP and port, a big Connect / Disconnect button,
-Noise suppression and Play on speaker options, one bar that is both the volume slider and the live loudness meter (with a dBFS
-readout), Mute and a changeable Hotkey, and a footer with the stream address, packets per second and ping (how fast the phone
+A 90s audio-rack look with two themes: **dark** (cyan / green / coral, glowing LCD displays) and **light** (cream paper with thick
+outlines and hard shadows). Switch with LIGHT | DARK in the header; the choice is remembered. Layout: header with the connection
+state, recessed LCD displays for the phone's IP and port, a big chamfered Connect / Disconnect button, Noise suppression and Play
+on speaker options with a reminder to choose "CABLE Output" as the microphone, a volume fader with a 10-segment peak meter and a
+dBFS readout, Mute / Unmute and a changeable Hotkey, and a footer with the status, packets per second and ping (how fast the phone
 accepted the connection). It is drawn by the app itself (no extra files), scales with Windows display scaling, and uses
 Consolas / Segoe UI / Bahnschrift (Windows 10+), falling back to default fonts if one is missing.
 

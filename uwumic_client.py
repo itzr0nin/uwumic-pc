@@ -1087,16 +1087,44 @@ def output_devices():
     return out
 
 
-# ----------------------------------------------------------------- look
-BG, HEAD_BG, PANEL, FIELD = "#050911", "#070C15", "#09111D", "#03060B"
-EDGE, EDGE_HI, TEAL_EDGE = "#14243A", "#1F3B57", "#0E5566"
-TXT, TXT_SOFT, DIM, DIMMER = "#E9F2FB", "#B8C7D9", "#6C7F99", "#46566C"
-CYAN_BG, CYAN_EDGE = "#052B34", "#0B7A8C"
-RED_BG, RED_EDGE = "#2A0714", "#9A1238"
-GREEN, GREEN_BG, GREEN_EDGE = "#19D9AE", "#062A24", "#0C7A64"
-AMBER_BG, AMBER_EDGE = "#2A2108", "#8A6A12"
+# ----------------------------------------------------------------- look: 90s audio-rack, dark and light themes
 APP_VERSION = "1.1.0"
+BITRATE_KBPS = 768  # 48 kHz x 16 bit x mono
 F_UI, F_MONO, F_DISP = "Segoe UI", "Consolas", "Bahnschrift"
+
+DARK = dict(
+    name="dark", hard=False, glow=True,
+    desk="#05080c", grid="#0b1620", chassis="#0c121b", edge="#1c293c", edge_hi="#2a3a52", trim="#17202d", trim_edge="#243044",
+    screw="#354359", head="#0a0f17", panel="#0c131e", panel_edge="#1a2638", card="#0a0f16", card_edge="#1b2738",
+    txt="#e2e8f0", txt2="#94a3b8", dim="#64748b", dimmer="#475569", accent="#00f0ff", green="#00ff88", coral="#ff3366",
+    amber="#f59e0b", chip_bg="#002b36", chip_edge="#00808c", chip_fg="#00f0ff",
+    green_bg="#081f14", green_edge="#0a8a50", coral_bg="#2a0714", coral_edge="#a3153f", amber_bg="#1c1606", amber_edge="#7a5410",
+    lcd_ip="#040e0c", lcd_ip_edge="#0b4a35", lcd_port="#040c14", lcd_port_edge="#0b3d4a", scan="#02080a",
+    lcd_ip_off="#00f2d2", lcd_ip_on="#00ff88", lcd_port_fg="#00f0ff", lcd_tag="#64748b",
+    btn_on="#00f2d2", btn_on2="#00c9b0", btn_on_text="#04121a", btn_on_shadow="#02060a",
+    btn_off="#ff4d7a", btn_off2="#ff265c", btn_off_text="#ffffff", btn_off_lip="#991336",
+    field="#080d14", check_off="#060b12", callout="#080d14", callout_edge="#203147",
+    track1="#515c6b", track2="#2f3844", track3="#1c222b", track_edge="#2b3542", cap_edge="#050b12",
+    mute_bg="#0b131e", mute_edge="#203147", mute_text="#e2e8f0", kbd_bg="#002633", kbd_edge="#00808c",
+    foot="#060a10", foot_edge="#141d2b", seg_off="#101820",
+)
+LIGHT = dict(
+    name="light", hard=True, glow=False,
+    desk="#d9d4c3", grid="#e8e4d6", chassis="#f7f5ee", edge="#1c2635", edge_hi="#1c2635", trim="#e5e1d3", trim_edge="#1c2635",
+    screw="#8c96a3", head="#f7f5ee", panel="#ffffff", panel_edge="#1c2635", card="#ffffff", card_edge="#1c2635",
+    txt="#111827", txt2="#4b5563", dim="#6b7280", dimmer="#9ca3af", accent="#0e7490", green="#10b981", coral="#ff2e63",
+    amber="#b45309", chip_bg="#ccfbf1", chip_edge="#0f766e", chip_fg="#0f766e",
+    green_bg="#d1fae5", green_edge="#047857", coral_bg="#ffe4e6", coral_edge="#ff2e63", amber_bg="#fef3c7", amber_edge="#b45309",
+    lcd_ip="#dbeadf", lcd_ip_edge="#1c2635", lcd_port="#dbeadf", lcd_port_edge="#1c2635", scan="#dbeadf",
+    lcd_ip_off="#064e3b", lcd_ip_on="#064e3b", lcd_port_fg="#064e3b", lcd_tag="#4b5563",
+    btn_on="#00d2b4", btn_on2="#00d2b4", btn_on_text="#041215", btn_on_shadow="#1c2635",
+    btn_off="#ff2e63", btn_off2="#ff2e63", btn_off_text="#ffffff", btn_off_lip="#1c2635",
+    field="#f4f5f2", check_off="#f4f5f2", callout="#ede8d8", callout_edge="#1c2635",
+    track1="#c9c4b0", track2="#d8d3c0", track3="#b7b29e", track_edge="#1c2635", cap_edge="#1c2635",
+    mute_bg="#ede8d8", mute_edge="#1c2635", mute_text="#111827", kbd_bg="#ccfbf1", kbd_edge="#0f766e",
+    foot="#ede8d8", foot_edge="#1c2635", seg_off="#bdb7a2",
+)
+THEMES = {"dark": DARK, "light": LIGHT}
 
 
 def mix(c1, c2, t):
@@ -1132,19 +1160,20 @@ def shorten(text, n):
     return text if len(text) <= n else text[: n - 1].rstrip() + "\u2026"
 
 
-# ----------------------------------------------------------------- merged meter + volume
+# ----------------------------------------------------------------- the fader (volume)
 class LevelSlider(tk.Canvas):
-    """One bar: the bright fill is the live loudness, the glowing line and hexagon handle are the volume (0-100%)."""
+    """Hardware-style fader: metal track, coloured fill up to the volume, rectangular cap with a notch (0-100%)."""
 
-    PAD = 12
+    PAD = 14
 
-    def __init__(self, master, command, value=1.0, width=330, height=40, bg=PANEL, scale=1.0):
+    def __init__(self, master, command, value=1.0, width=330, height=40, bg="#0c131e", scale=1.0, theme=None):
         super().__init__(master, width=width, height=height, bg=bg, highlightthickness=0, cursor="hand2")
         self.command = command
         self.value = value
         self.level = 0.0
         self.muted = False
         self.k = scale
+        self.t = theme or DARK
         self.bind("<Button-1>", self._drag)
         self.bind("<B1-Motion>", self._drag)
         self.bind("<Configure>", lambda e: self.redraw())
@@ -1158,11 +1187,17 @@ class LevelSlider(tk.Canvas):
             h = int(self.cget("height"))
         return w, h
 
+    def set_theme(self, theme, bg):
+        self.t = theme
+        self.config(bg=bg)
+        self.redraw()
+
     def set_state(self, value, level, muted):
-        level = round(level, 3)
-        if (value, level, muted) != (self.value, self.level, self.muted):
-            self.value, self.level, self.muted = value, level, muted
+        # the loudness (level) is shown by the segmented meter above, so only the volume and mute change the picture
+        if (value, muted) != (self.value, self.muted):
+            self.value, self.muted = value, muted
             self.redraw()
+        self.level = level
 
     def _drag(self, e):
         w, _ = self._size()
@@ -1178,26 +1213,24 @@ class LevelSlider(tk.Canvas):
 
     def redraw(self):
         self.delete("all")
-        k = self.k
+        k, t = self.k, self.t
         w, h = self._size()
         left, right, cy = self.PAD * k, w - self.PAD * k, h / 2
         span = right - left
-        th = 6 * k
-        self.create_rectangle(left, cy - th / 2, right, cy + th / 2, fill="#0A1626", outline="#16314A")
+        th = 10 * k
+        top = cy - th / 2
+        for i, col in enumerate((t["track1"], t["track2"], t["track3"])):  # metal groove: three bands
+            self.create_rectangle(left, top + th * i / 3, right, top + th * (i + 1) / 3, fill=col, outline="")
+        self.create_rectangle(left, top, right, cy + th / 2, fill="", outline=t["track_edge"], width=max(1, round(k)))
         x = left + span * self.value
-        if not self.muted and self.value > 0:  # glowing volume line
-            for width, col in ((9 * k, "#062F39"), (5 * k, "#0A6070"), (2 * k, CYAN)):
-                self.create_line(left, cy, x, cy, fill=col, width=max(1, round(width)))
-        if not self.muted and self.level > 0:  # live loudness
-            col = RED if self.level > 0.9 else AMBER if self.level > 0.7 else CYAN
-            self.create_rectangle(left, cy - th / 2 + k, left + span * self.level, cy + th / 2 - k, fill=col, outline="")
-        body = "#5B6573" if self.muted else CYAN
-        shine = "#98A2B0" if self.muted else "#C4F8FF"
-        for hw, hh, col, edge in ((8 * k, 13 * k, body, "#0A8FA3" if not self.muted else "#3A4452"),
-                                  (3.5 * k, 6.5 * k, shine, "")):
-            self.create_polygon(x, cy - hh, x + hw, cy - hh * 0.55, x + hw, cy + hh * 0.55,
-                                x, cy + hh, x - hw, cy + hh * 0.55, x - hw, cy - hh * 0.55,
-                                fill=col, outline=edge)
+        if self.value > 0:  # coloured fill up to the volume
+            for i in range(3):
+                self.create_rectangle(left, top + 1 + (th - 2) * i / 3, x, top + 1 + (th - 2) * (i + 1) / 3,
+                                      fill=mix(t["green"], "#000000", 0.22 * i), outline="")
+        cw, ch, sh = 7 * k, 12 * k, 2 * k  # cap with hard shadow and a notch
+        self.create_rectangle(x - cw + sh, cy - ch + sh, x + cw + sh, cy + ch + sh, fill=t["cap_edge"], outline="")
+        self.create_rectangle(x - cw, cy - ch, x + cw, cy + ch, fill=t["green"], outline=t["cap_edge"], width=max(1, round(2 * k)))
+        self.create_rectangle(x - 4 * k, cy - k, x + 4 * k, cy + k, fill=t["cap_edge"], outline="")
 
 
 class Painter:
@@ -1253,13 +1286,13 @@ class Painter:
             cx += self.measure(font, ch) / S + track
         return total
 
-    def chip(self, x, cy, s, fg, bg, edge, anchor="w", dot=None, tags=(), font=(F_MONO, 8, "bold"), track=0.8):
+    def chip(self, x, cy, s, fg, bg, edge, anchor="w", dot=None, tags=(), font=(F_MONO, 8, "bold"), track=0.8, h=20):
         """Small label box. x is its left edge (anchor 'w') or right edge ('e'). Returns its width."""
         pad = 8
         tw = self.tw(s, font, track)
         w = tw + 2 * pad + (11 if dot else 0)
         x0 = x - w if anchor == "e" else x
-        self.rect(x0, cy - 10, x0 + w, cy + 10, fill=bg, outline=edge, tags=tags)
+        self.rect(x0, cy - h / 2, x0 + w, cy + h / 2, fill=bg, outline=edge, tags=tags)
         tx = x0 + pad
         if dot:
             self.oval(tx, cy - 3, tx + 6, cy + 3, fill=dot, tags=tags)
@@ -1269,14 +1302,17 @@ class Painter:
 
 
 class Ui:
-    """The window: a dark, cyan 'receiver' look drawn on one canvas, driven by the state in App."""
+    """The window: a 90s audio-rack receiver (dark or light) drawn on one canvas, driven by the state in App."""
 
-    W, H = 600, 566
+    W, H = 620, 594
+    LAYERS = ("hdr", "chips", "cards", "btn", "opts", "vol", "mute", "foot")
 
     def __init__(self, root, app):
         import tkinter.font as tkfont
 
         self.root, self.app = root, app
+        self.name = app.theme if app.theme in THEMES else "dark"
+        self.t = THEMES[self.name]
         self.S = max(1.0, float(root.winfo_fpixels("1i")) / 96.0)
         S = self.S
         self._fonts = {}
@@ -1288,13 +1324,14 @@ class Ui:
                 f = self._fonts[font] = tkfont.Font(root=root, family=font[0], size=font[1], weight=weight)
             return f.measure(text)
 
-        root.configure(bg=BG)
         root.geometry(f"{round(self.W * S)}x{round(self.H * S)}")
-        self.c = tk.Canvas(root, width=round(self.W * S), height=round(self.H * S), bg=BG, highlightthickness=0, bd=0)
+        self.c = tk.Canvas(root, width=round(self.W * S), height=round(self.H * S), bg=self.t["desk"], highlightthickness=0, bd=0)
+        root.configure(bg=self.t["desk"])
         self.c.pack()
         self.p = Painter(self.c, S, measure)
         self.keys = {}
         self.focus = {"ip": False, "port": False}
+        self.blink = False
         self._static()
         self._widgets()
         self._actions()
@@ -1311,69 +1348,128 @@ class Ui:
             import ctypes
             self.root.update_idletasks()
             hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
+            dark = 1 if self.name == "dark" else 0
             for attr in (20, 19):  # dark title bar (Windows 10/11)
-                ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(ctypes.c_int(1)), 4)
-            rgb = int(HEAD_BG[5:7], 16) << 16 | int(HEAD_BG[3:5], 16) << 8 | int(HEAD_BG[1:3], 16)
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(ctypes.c_int(dark)), 4)
+            col = self.t["trim"]
+            rgb = int(col[5:7], 16) << 16 | int(col[3:5], 16) << 8 | int(col[1:3], 16)
             ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 35, ctypes.byref(ctypes.c_int(rgb)), 4)  # Windows 11
         except Exception:
             pass
 
+    def set_theme(self, name):
+        if name not in THEMES or name == self.name:
+            return
+        self.name, self.t = name, THEMES[name]
+        for tag in ("static",) + self.LAYERS:
+            self.c.delete(tag)
+        self.c.config(bg=self.t["desk"])
+        self.root.configure(bg=self.t["desk"])
+        self.keys.clear()
+        self._static()
+        self.slider.set_theme(self.t, self.t["panel"])
+        self.dark_title_bar()
+        self._style_entries()
+        self.c.tag_raise("win")  # the entries and the fader must stay on top of the freshly drawn shapes
+
+    def panel(self, x1, y1, x2, y2, fill, edge, tags, off=3):
+        """A rectangle with this theme's edge: thin line (dark) or thick outline + hard offset shadow (light)."""
+        p, t = self.p, self.t
+        if t["hard"]:
+            p.rect(x1 + off, y1 + off, x2 + off, y2 + off, fill=t["edge"], tags=tags)
+            p.rect(x1, y1, x2, y2, fill=fill, outline=edge, width=2, tags=tags)
+        else:
+            p.rect(x1, y1, x2, y2, fill=fill, outline=edge, tags=tags)
+
+    def glow(self, x, y, s, fg, font, glow_col, anchor="w", tags=(), track=0):
+        p = self.p
+        if self.t["glow"]:
+            for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                p.text(x + dx, y + dy, s, glow_col, font, anchor, tags, track)
+        return p.text(x, y, s, fg, font, anchor, tags, track)
+
     # -- fixed parts
     def _static(self):
-        p, W, H = self.p, self.W, self.H
+        p, t, W, H = self.p, self.t, self.W, self.H
+        ST = ("static",)
+        p.rect(0, 0, W, H, fill=t["chassis"], tags=ST)
         for x in range(0, W + 1, 24):
-            p.line([(x, 0), (x, H)], "#08131E")
-        for y in range(0, H + 1, 24):
-            p.line([(0, y), (W, y)], "#08131E")
-        p.rect(0, 0, W, 2, fill="#0AA9BE")
-        p.rect(0, 2, W, 46, fill=HEAD_BG)
-        p.line([(0, 46), (W, 46)], EDGE)
-        p.poly([(30, 15), (39, 24), (30, 33), (21, 24)], fill=CYAN)
-        p.poly([(30, 19), (35, 24), (30, 29), (25, 24)], fill=HEAD_BG)
-        x = 50
-        x += p.text(x, 24, "UwU Mic", TXT, (F_DISP, 13, "bold")) + 8
-        x += p.text(x, 24, "// PC CLIENT", CYAN, (F_DISP, 10, "bold")) + 10
-        p.chip(x, 24, f"v{APP_VERSION}", DIM, HEAD_BG, EDGE, font=(F_MONO, 8, "normal"), track=0.3)
-        p.text(20, 66, "AUDIO STREAM RECEIVER", DIM, (F_MONO, 9, "normal"), track=1.6)
-        # sample rate / format, right aligned
-        parts = [("SAMPLE RATE:", DIM, "normal"), (" 48.0 kHz", TXT, "bold"), ("  |  ", DIMMER, "normal"),
-                 ("FORMAT:", DIM, "normal"), (" PCM 16-bit", TXT, "bold")]
+            p.line([(x, 10), (x, H)], t["grid"], tags=ST)
+        for y in range(10, H + 1, 24):
+            p.line([(0, y), (W, y)], t["grid"], tags=ST)
+        # top trim with two screws
+        p.rect(0, 0, W, 9, fill=t["trim"], tags=ST)
+        p.line([(0, 9), (W, 9)], t["trim_edge"], width=2 if t["hard"] else 1, tags=ST)
+        for sx in (16, W - 16):
+            p.oval(sx - 3, 1.5, sx + 3, 7.5, fill=t["screw"], outline=t["edge"] if t["hard"] else "", tags=ST)
+        # header
+        p.rect(0, 10, W, 60, fill=t["head"], tags=ST)
+        p.line([(0, 60), (W, 60)], t["edge"], width=2 if t["hard"] else 1, tags=ST)
+        cx, cy = 36, 35  # logo: diamond
+        if t["hard"]:
+            p.poly([(cx + 1, cy - 11), (cx + 12, cy), (cx + 1, cy + 11), (cx - 10, cy)], fill=t["edge"], tags=ST)
+        p.poly([(cx, cy - 11), (cx + 11, cy), (cx, cy + 11), (cx - 11, cy)], fill="#00c49f" if t["hard"] else t["head"],
+               outline=t["edge"] if t["hard"] else t["accent"], width=2, tags=ST)
+        p.poly([(cx, cy - 5), (cx + 5, cy), (cx, cy + 5), (cx - 5, cy)], fill=t["edge"] if t["hard"] else t["accent"], tags=ST)
+        x = 56
+        x += self.glow(x, 35, "UwU", t["txt"], (F_DISP, 15, "bold"), t["txt"], tags=ST) + 5
+        x += p.text(x, 35, "Mic", t["coral"], (F_DISP, 15, "bold"), tags=ST) + 10
+        x += p.text(x, 36, "// PC CLIENT", t["accent"], (F_MONO, 8, "bold"), tags=ST, track=1.0) + 10
+        self.panel(x, 25, x + 46, 45, t["trim"] if t["hard"] else t["card"], t["edge"] if t["hard"] else t["edge_hi"], ST, off=1)
+        p.text(x + 23, 35, f"v{APP_VERSION}", t["dim"] if not t["hard"] else t["txt"], (F_MONO, 8, "bold"), anchor="c", tags=ST)
+        # subhead
+        p.text(20, 76, "AUDIO STREAM RECEIVER", t["txt2"] if not t["hard"] else t["txt"], (F_MONO, 9, "bold"), tags=ST, track=1.4)
+        parts = [("SAMPLE RATE:", t["txt2"], "normal"), (" 48.0 kHz", t["txt"], "bold"), ("  |  ", t["dimmer"], "normal"),
+                 ("FORMAT:", t["txt2"], "normal"), (" PCM 16-bit", t["txt"], "bold")]
         fnt = lambda wt: (F_MONO, 8, wt)
         total = sum(p.tw(s, fnt(wt)) for s, _, wt in parts)
-        x = W - 20 - total
+        xx = W - 20 - total
         for s, col, wt in parts:
-            x += p.text(x, 66, s, col, fnt(wt))
-        p.line([(20, 112), (W - 20, 112)], EDGE)
-        for x, w, y in ((20, 368, 124), (400, 180, 124)):
-            p.rect(x, y, x + w, y + 80, fill=PANEL, outline=EDGE)
-        p.text(414, 142, "Port", DIM, (F_UI, 9, "normal"))
-        p.rect(20, 280, 580, 512, fill=PANEL, outline=EDGE)
-        p.line([(34, 358), (566, 358)], EDGE)
-        p.text(38, 376, "VOLUME OUTPUT", DIM, (F_MONO, 9, "normal"), track=1.2)
-        x0, span = 48, 504  # under the slider (it starts at x=36 and has 12 px of padding)
-        for pct in (0, 25, 50, 75, 100):
-            p.text(x0 + span * pct / 100, 438, f"{pct}%", DIMMER, (F_MONO, 8, "normal"), anchor="c")
-        p.rect(0, 528, W, H, fill=HEAD_BG)
-        p.line([(0, 528), (W, 528)], EDGE)
+            xx += p.text(xx, 76, s, col, fnt(wt), tags=ST)
+        p.line([(20, 118), (W - 20, 118)], t["edge"] if t["hard"] else t["card_edge"], width=2 if t["hard"] else 1, tags=ST)
+        # network cards
+        for x1, x2, label in ((20, 404, "PHONE IP ADDRESS"), (416, 600, "PORT")):
+            self.panel(x1, 130, x2, 226, t["card"], t["card_edge"], ST)
+            lab_col = t["txt2"] if not t["hard"] else t["txt"]
+            if label == "PORT":
+                p.text(x1 + 14, 148, label, lab_col, (F_MONO, 8, "bold"), tags=ST, track=1.2)
+            else:  # little phone icon + label
+                p.rect(x1 + 14, 140, x1 + 22, 156, outline=t["accent"], tags=ST)
+                p.line([(x1 + 17, 153), (x1 + 19, 153)], t["accent"], tags=ST)
+                p.text(x1 + 30, 148, label, lab_col, (F_MONO, 8, "bold"), tags=ST, track=1.2)
+        # controls panel frame + divider + label
+        self.panel(20, 322, 600, 550, t["panel"], t["panel_edge"], ST)
+        p.line([(34, 410), (586, 410)], t["card_edge"] if not t["hard"] else t["edge"], width=1, tags=ST)
+        p.text(36, 428, "VOLUME OUTPUT", t["txt2"] if not t["hard"] else t["txt"], (F_MONO, 8, "bold"), tags=ST, track=1.2)
+        # footer + bezel
+        p.rect(0, 558, W, H, fill=t["foot"], tags=ST)
+        p.line([(0, 558), (W, 558)], t["foot_edge"], width=2 if t["hard"] else 1, tags=ST)
+        p.rect(0, H - 4, W, H, fill=t["trim"], tags=ST)
+        for sx in (16, W - 16):
+            p.oval(sx - 3, H - 8, sx + 3, H - 2, fill=t["screw"], tags=ST)
 
     # -- real widgets
     def _widgets(self):
-        a, p, S, c = self.app, self.p, self.S, self.c
+        a, S, c, t = self.app, self.S, self.c, self.t
         digits = (self.root.register(lambda s: s == "" or (s.isdigit() and len(s) <= 5)), "%P")
-        common = dict(bg=FIELD, fg=TXT, insertbackground=CYAN, relief="flat", bd=0, highlightthickness=0,
-                      disabledbackground=FIELD, disabledforeground=CYAN, font=(F_MONO, 13, "bold"))
+        common = dict(relief="flat", bd=0, highlightthickness=0, font=(F_MONO, 17, "bold"))
         self.ip_e = tk.Entry(self.root, textvariable=a.ip, **common)
-        self.port_e = tk.Entry(self.root, textvariable=a.port, justify="center", validate="key",
-                               validatecommand=digits, **common)
-        c.create_window(self.d(20 + 10 + 40), self.d(124 + 52), window=self.ip_e, anchor="w",
-                        width=self.d(368 - 20 - 44), height=self.d(26))
-        c.create_window(self.d(400 + 90), self.d(124 + 52), window=self.port_e, anchor="center",
-                        width=self.d(180 - 30), height=self.d(26))
+        self.port_e = tk.Entry(self.root, textvariable=a.port, justify="center", validate="key", validatecommand=digits, **common)
+        c.create_window(self.d(84), self.d(194), window=self.ip_e, anchor="w", width=self.d(244), height=self.d(30), tags=("win",))
+        c.create_window(self.d(508), self.d(194), window=self.port_e, anchor="center", width=self.d(140), height=self.d(30), tags=("win",))
         for key, e in (("ip", self.ip_e), ("port", self.port_e)):
             e.bind("<FocusIn>", lambda ev, k=key: self._focus(k, True))
             e.bind("<FocusOut>", lambda ev, k=key: self._focus(k, False))
-        self.slider = LevelSlider(self.root, a.on_vol, a.gain, width=self.d(528), height=self.d(40), bg=PANEL, scale=S)
-        c.create_window(self.d(36), self.d(280 + 114), window=self.slider, anchor="nw")
+        self._style_entries()
+        self.slider = LevelSlider(self.root, a.on_vol, a.gain, width=self.d(552), height=self.d(40), bg=t["panel"], scale=S, theme=t)
+        c.create_window(self.d(34), self.d(440), window=self.slider, anchor="nw", tags=("win",))
+
+    def _style_entries(self):
+        t, live = self.t, bool(self.app.streaming)
+        ipfg = t["lcd_ip_on"] if live else t["lcd_ip_off"]
+        self.ip_e.config(bg=t["lcd_ip"], fg=ipfg, insertbackground=ipfg, disabledbackground=t["lcd_ip"], disabledforeground=ipfg)
+        self.port_e.config(bg=t["lcd_port"], fg=t["lcd_port_fg"], insertbackground=t["lcd_port_fg"],
+                           disabledbackground=t["lcd_port"], disabledforeground=t["lcd_port_fg"])
 
     def _focus(self, key, on):
         self.focus[key] = on
@@ -1385,10 +1481,10 @@ class Ui:
         self.keys.clear()
 
     def _actions(self):
-        c = self.c
-        acts = {"act_connect": self.app.toggle, "act_nc": lambda: self._flip(self.app.nc_var, self.app.on_noise),
-                "act_mon": lambda: self._flip(self.app.mon_var, self.app.on_monitor),
-                "act_mute": self.app.toggle_mute, "act_hotkey": self.app.capture_hotkey}
+        c, a = self.c, self.app
+        acts = {"act_connect": a.toggle, "act_nc": lambda: self._flip(a.nc_var, a.on_noise),
+                "act_mon": lambda: self._flip(a.mon_var, a.on_monitor), "act_mute": a.toggle_mute,
+                "act_hotkey": a.capture_hotkey, "act_light": lambda: a.set_theme("light"), "act_dark": lambda: a.set_theme("dark")}
         for tag, fn in acts.items():
             c.tag_bind(tag, "<Button-1>", lambda ev, f=fn: f())
             c.tag_bind(tag, "<Enter>", lambda ev: c.config(cursor="hand2"))
@@ -1405,182 +1501,275 @@ class Ui:
         st = dict(active=bool(a.active), streaming=bool(a.streaming), muted=bool(a.muted),
                   pct=round(a.gain * 100), nc=bool(a.nc_var.get()), mon=bool(a.mon_var.get()))
         mode = "live" if st["streaming"] else "connecting" if st["active"] else "off"
+        self.blink = int(time.monotonic() / 0.9) % 2 == 0
+        pulse = self.blink if mode == "live" else None
         layers = {
-            "hdr": (mode,),
-            "chips": (st["streaming"], st["muted"]),
-            "cards": (mode, self.focus["ip"], self.focus["port"]),
-            "btn": (st["active"],),
-            "opts": (st["nc"], st["mon"]),
-            "vol": (st["muted"], st["pct"], self._db_text()),
-            "mute": (st["muted"], a.hotkey_label()),
-            "foot": (mode, a.status, a.ip.get(), a.port.get(), a.pps, a.ping_ms),
+            "hdr": (mode, st["muted"], pulse, self.name),
+            "chips": (mode, st["muted"], a.ping_ms is not None, self.name),
+            "cards": (mode, self.focus["ip"], self.focus["port"], self.name),
+            "btn": (st["active"], mode, self.name),
+            "opts": (st["nc"], st["mon"], self.name),
+            "vol": (st["muted"], st["pct"], self._db_text(), self._segments(), self.name),
+            "mute": (st["muted"], a.hotkey_label(), self.name),
+            "foot": (mode, st["muted"], a.status, a.pps, a.ping_ms, pulse, self.name),
         }
         for name, key in layers.items():
             if self.keys.get(name) != key:
                 self.keys[name] = key
                 self.c.delete(name)
                 getattr(self, "_draw_" + name)(st, mode)
+                if name == "cards":
+                    self._style_entries()
         self.slider.set_state(0.0 if st["muted"] else a.gain, a.shown, st["muted"])
+        self.c.tag_raise("win")
+
+    def _db(self):
+        s = self.app.shown
+        return None if s < 0.003 else 20 * math.log10(min(1.0, s))
 
     def _db_text(self):
-        s = self.app.shown
-        return "-\u221e dBFS" if s < 0.003 else f"{20 * math.log10(min(1.0, s)):.1f} dBFS"
+        db = self._db()
+        return "-\u221e dBFS" if db is None else f"{db:.1f} dBFS"
 
+    def _segments(self):
+        """How many of the 10 meter segments are lit (-48 dBFS .. -3 dBFS in 5 dB steps)."""
+        db = self._db()
+        if self.app.muted or db is None:
+            return 0
+        return sum(1 for i in range(10) if db >= -48 + 5 * i)
+
+    # header: theme switch, connection pill, muted pill
     def _draw_hdr(self, st, mode):
-        p, W = self.p, self.W
+        p, t, W = self.p, self.t, self.W
+        x = W - 20
+        if st["muted"] and mode != "off":
+            w = p.chip(x, 35, "MIC MUTED", t["coral"], t["coral_bg"], t["coral_edge"], anchor="e", tags=("hdr",),
+                       font=(F_MONO, 8, "bold"), track=0.6, h=22)
+            x -= w + 8
         txt, fg, bg, edge, dot = {
-            "live": ("CONNECTED", CYAN, CYAN_BG, CYAN_EDGE, GREEN),
-            "connecting": ("CONNECTING", AMBER, AMBER_BG, AMBER_EDGE, AMBER),
-            "off": ("DISCONNECTED", DIM, HEAD_BG, EDGE_HI, AMBER),
+            "live": ("CONNECTED", t["green"] if not t["hard"] else t["green_edge"], t["green_bg"], t["green_edge"], t["green"]),
+            "connecting": ("CONNECTING", t["amber"], t["amber_bg"], t["amber_edge"], t["amber"]),
+            "off": ("DISCONNECTED", t["amber"] if t["hard"] else t["dim"], t["amber_bg"] if t["hard"] else t["head"],
+                    t["amber_edge"] if t["hard"] else t["edge_hi"], t["amber"]),
         }[mode]
-        p.chip(W - 20, 24, txt, fg, bg, edge, anchor="e", dot=dot, tags=("hdr",), font=(F_MONO, 8, "bold"), track=1.0)
+        if mode == "live" and self.blink:
+            dot = mix(dot, t["green_bg"], 0.55)
+        w = p.chip(x, 35, txt, fg, bg, edge, anchor="e", dot=dot, tags=("hdr",), font=(F_MONO, 8, "bold"), track=0.8, h=22)
+        x -= w + 10
+        font = (F_MONO, 8, "bold")  # LIGHT | DARK switch
+        light, dark = self.name == "light", self.name == "dark"
+        wl, wd = p.tw("LIGHT", font, 0.6) + 18, p.tw("DARK", font, 0.6) + 18
+        x0 = x - (wl + wd + 14)
+        self.panel(x0, 24, x, 46, "#070b10" if dark else t["trim"], "#1e2d42" if dark else t["edge"], ("hdr",), off=1)
+        xs = x0 + 6
+        p.rect(xs - 4, 26, xs + wl - 4, 44, fill=t["panel"] if light else "", tags=("hdr", "act_light"))
+        if light:
+            p.oval(xs, 32, xs + 6, 38, fill=t["green"], tags=("hdr", "act_light"))
+        p.text(xs + (9 if light else 2), 35, "LIGHT", t["txt"] if light else t["dim"], font, tags=("hdr", "act_light"), track=0.6)
+        sx = xs + wl - 4
+        p.text(sx, 35, "|", t["dimmer"], font, tags=("hdr",))
+        xd = sx + 14
+        p.rect(xd - 4, 26, xd + wd - 2, 44, fill="", tags=("hdr", "act_dark"))
+        if dark:
+            p.oval(xd, 32, xd + 6, 38, fill=t["accent"], tags=("hdr", "act_dark"))
+        p.text(xd + (9 if dark else 2), 35, "DARK", t["txt"] if dark else t["dim"], font, tags=("hdr", "act_dark"), track=0.6)
 
     def _draw_chips(self, st, mode):
-        p = self.p
+        p, t = self.p, self.t
+        live = mode == "live"
         x = 20
-        if st["muted"]:
-            x += p.chip(x, 92, "AUDIO MUTED", RED, RED_BG, RED_EDGE, dot=RED, tags=("chips",)) + 8
-        elif st["streaming"]:
-            x += p.chip(x, 92, "LIVE AUDIO", GREEN, GREEN_BG, GREEN_EDGE, dot=GREEN, tags=("chips",)) + 8
-        p.chip(x, 92, "LOW-LATENCY", CYAN, CYAN_BG, CYAN_EDGE, tags=("chips",))
+        if live and not st["muted"]:
+            x += p.chip(x, 98, "LIVE AUDIO", t["green"] if not t["hard"] else t["green_edge"], t["green_bg"], t["green_edge"],
+                        dot=t["green"], tags=("chips",)) + 8
+        elif st["muted"]:
+            x += p.chip(x, 98, "AUDIO MUTED", t["coral"], t["coral_bg"], t["coral_edge"], dot=t["coral"], tags=("chips",)) + 8
+        p.chip(x, 98, "LOW-LATENCY // ACTIVE" if live else "LOW-LATENCY", t["chip_fg"], t["chip_bg"], t["chip_edge"], tags=("chips",))
+        if live:
+            kb, fb = f"{BITRATE_KBPS} kbps", (F_MONO, 8, "bold")
+            wv = p.tw(kb, fb)
+            p.text(600 - wv, 98, kb, t["accent"], fb, tags=("chips",))
+            p.text(600 - wv - 8, 98, "BITRATE:", t["txt2"], (F_MONO, 8, "normal"), anchor="e", tags=("chips",))
 
     def _draw_cards(self, st, mode):
-        p, a = self.p, self.app
+        p, t = self.p, self.t
         live = mode == "live"
-        # phone ip card
-        lx = 34
-        if live:
-            p.oval(lx, 139, lx + 6, 145, fill=CYAN, tags=("cards",))
-            lx += 12
-        p.text(lx, 142, "Phone IP address", CYAN if live else DIM, (F_UI, 9, "bold" if live else "normal"), tags=("cards",))
-        x = 376
-        x -= p.chip(x, 142, "IPv4", CYAN, CYAN_BG, CYAN_EDGE, anchor="e", tags=("cards",), font=(F_MONO, 7, "bold")) + 6
-        if live:
-            p.chip(x, 142, "STREAMING", CYAN, CYAN_BG, CYAN_EDGE, anchor="e", tags=("cards",), font=(F_MONO, 7, "bold"))
-        p.chip(568, 142, "TCP", CYAN, CYAN_BG, CYAN_EDGE, anchor="e", tags=("cards",), font=(F_MONO, 7, "bold"))
-        for key, x1, x2 in (("ip", 30, 378), ("port", 410, 570)):
-            col = CYAN_EDGE if (live or self.focus[key]) else EDGE_HI
-            p.rect(x1, 158, x2, 194, fill=FIELD, outline=col, tags=("cards",))
-        # globe icon
-        gc = CYAN if live else "#2C8696"
-        p.oval(42, 168, 56, 182, outline=gc, tags=("cards",))
-        p.oval(46, 168, 52, 182, outline=gc, tags=("cards",))
-        p.line([(42, 175), (56, 175)], gc, tags=("cards",))
+        tag = ("cards",)
+        x = 392
+        x -= p.chip(x, 148, "IPv4", t["chip_fg"], t["chip_bg"], t["chip_edge"], anchor="e", tags=tag,
+                    font=(F_MONO, 7, "bold"), track=0.6, h=16) + 6
+        p.chip(584, 148, "TCP", t["chip_fg"], t["chip_bg"], t["chip_edge"], anchor="e", tags=tag,
+               font=(F_MONO, 7, "bold"), track=0.6, h=16)
+        for key, x1, x2, bg, edge in (("ip", 30, 394, t["lcd_ip"], t["lcd_ip_edge"]), ("port", 426, 590, t["lcd_port"], t["lcd_port_edge"])):
+            col = t["accent"] if self.focus[key] else edge
+            self.panel(x1, 166, x2, 218, bg, col, tag, off=2)
+            if not t["hard"]:
+                for yy in range(168, 217, 3):  # scan lines
+                    p.line([(x1 + 1, yy), (x2 - 1, yy)], t["scan"], tags=tag)
+        gc = t["lcd_ip_on"] if live else t["lcd_ip_off"]  # globe icon
+        p.oval(40, 184, 58, 202, outline=gc, tags=tag)
+        p.oval(45, 184, 53, 202, outline=gc, tags=tag)
+        p.line([(40, 193), (58, 193)], gc, tags=tag)
+        tg, col, bgc, ec = (("ONLINE", t["green"] if not t["hard"] else t["green_edge"], t["green_bg"], t["green_edge"]) if live
+                            else ("STANDBY", t["lcd_tag"], t["lcd_ip"] if not t["hard"] else "#f3f4f6", t["dimmer"]))
+        p.chip(386, 192, tg, col, bgc, ec, anchor="e", tags=tag, font=(F_MONO, 7, "bold"), track=0.8, h=16)
 
     def _draw_btn(self, st, mode):
-        p, on = self.p, st["active"]
-        x, y, w, h, cut = 20, 218, 560, 46, 14
+        p, t, on = self.p, self.t, st["active"]
+        x, y, w, h, cut = 20, 240, 580, 54, 15
+        tag = ("btn", "act_connect")
         shape = [(x, y), (x + w - cut, y), (x + w, y + cut), (x + w, y + h), (x + cut, y + h), (x, y + h - cut)]
-        c1, c2 = ("#FF0A45", "#FF3B6B") if on else ("#00F0FF", "#00C8FF")
+        c1, c2 = (t["btn_off"], t["btn_off2"]) if on else (t["btn_on"], t["btn_on2"])
+        sh = t["btn_off_lip"] if on else t["btn_on_shadow"]
+        p.poly([(px + 4, py + 4) for px, py in shape], fill=sh, tags=tag)  # hard shadow / lower lip
         n = 28
         for i in range(n):
             pts = clip_x(shape, x + w * i / n - (0.6 if i else 0), x + w * (i + 1) / n + 0.6)
             if len(pts) >= 3:
-                p.poly(pts, fill=mix(c1, c2, i / (n - 1)), tags=("btn", "act_connect"))
+                p.poly(pts, fill=mix(c1, c2, i / (n - 1)), tags=tag)
+        if t["hard"]:
+            p.poly(shape, outline=t["edge"], width=2, tags=tag)
         label = "DISCONNECT" if on else "CONNECT"
-        fg = "#FFE6EC" if on else "#04121A"
-        font = (F_DISP, 13, "bold")
-        tw = p.tw(label, font, 2.5)
-        gx = x + w / 2 - (14 + 12 + tw) / 2
+        fg = t["btn_off_text"] if on else t["btn_on_text"]
+        font = (F_DISP, 14, "bold")
+        tw = p.tw(label, font, 3)
+        tag_txt = "LIVE RX ACTIVE" if on and mode == "live" else ""
+        tagw = (p.tw(tag_txt, (F_MONO, 7, "bold"), 0.5) + 16 + 10) if tag_txt else 0
+        gx = x + w / 2 - (14 + 12 + tw + tagw) / 2
         cy = y + h / 2
         if on:
-            p.rect(gx, cy - 5, gx + 10, cy + 5, fill="#FFB3C5", tags=("btn", "act_connect"))
+            p.rect(gx, cy - 6, gx + 12, cy + 6, fill="#ffffff", tags=tag)
         else:
-            p.poly([(gx, cy - 6), (gx + 10, cy), (gx, cy + 6)], fill=fg, tags=("btn", "act_connect"))
-        p.text(gx + 26, cy, label, fg, font, tags=("btn", "act_connect"), track=2.5)
+            p.poly([(gx, cy - 7), (gx + 12, cy), (gx, cy + 7)], fill=fg, tags=tag)
+        p.text(gx + 26, cy, label, fg, font, tags=tag, track=3)
+        if tag_txt:
+            bx = gx + 26 + tw + 10
+            p.rect(bx, cy - 9, bx + tagw - 10, cy + 9, fill="#7a0f2c" if not t["hard"] else "#c4123f", outline="#ffd0dc", tags=tag)
+            p.text(bx + 8, cy, tag_txt, "#ffe4ea", (F_MONO, 7, "bold"), tags=tag, track=0.5)
 
     def _check(self, y, checked, label, tag):
-        p = self.p
-        p.rect(34, y - 12, 300, y + 12, fill=PANEL, tags=("opts", tag))  # click area
-        p.rect(34, y - 8, 50, y + 8, fill=CYAN if checked else FIELD, outline=CYAN if checked else EDGE_HI, tags=("opts", tag))
+        p, t = self.p, self.t
+        p.rect(34, y - 12, 280, y + 12, fill=t["panel"], tags=("opts", tag))  # click area
+        edge = t["green"] if (checked and not t["hard"]) else t["edge"] if t["hard"] else t["edge_hi"]
+        p.rect(36, y - 8, 52, y + 8, fill=t["green"] if checked else t["check_off"], outline=edge,
+               width=2 if t["hard"] else 1, tags=("opts", tag))
         if checked:
-            p.line([(37, y), (41, y + 4), (48, y - 4)], "#04121A", width=2, tags=("opts", tag))
-        p.text(62, y, label, TXT_SOFT, (F_UI, 10), tags=("opts", tag))
+            p.line([(39, y), (43, y + 4), (50, y - 4)], "#041b10" if not t["hard"] else "#ffffff", width=2, tags=("opts", tag))
+        p.text(64, y, label, t["txt"] if checked or t["hard"] else t["txt2"], (F_MONO, 9, "bold"), tags=("opts", tag))
 
     def _draw_opts(self, st, mode):
-        self._check(304, st["nc"], "Noise suppression", "act_nc")
-        self._check(334, st["mon"], "Play on speaker", "act_mon")
-        p = self.p
-        p.rect(318, 292, 566, 346, fill=FIELD, outline=CYAN_EDGE, tags=("opts",))
-        p.oval(330, 311, 346, 327, outline=CYAN, tags=("opts",))
-        p.text(338, 319, "i", CYAN, (F_MONO, 8, "bold"), anchor="c", tags=("opts",))
-        p.text(358, 319, 'Choose "CABLE Output" as the microphone in your app or game', TXT_SOFT, (F_MONO, 8, "normal"),
-               anchor="w", tags=("opts",), wrap=196)
+        p, t = self.p, self.t
+        self._check(348, st["nc"], "Noise suppression", "act_nc")
+        self._check(382, st["mon"], "Play on speaker", "act_mon")
+        self.panel(310, 336, 586, 396, t["callout"], t["callout_edge"], ("opts",), off=2)  # routing hint
+        p.oval(322, 358, 338, 374, outline=t["txt2"] if not t["hard"] else t["edge"], tags=("opts",))
+        p.text(330, 366, "i", t["txt2"] if not t["hard"] else t["edge"], (F_MONO, 8, "bold"), anchor="c", tags=("opts",))
+        p.text(348, 366, 'Choose "CABLE Output" as the microphone in your app or game', t["txt2"], (F_UI, 9, "normal"),
+               anchor="w", tags=("opts",), wrap=226)
 
     def _draw_vol(self, st, mode):
-        p = self.p
+        p, t = self.p, self.t
+        tag = ("vol",)
+        cy = 428
         if st["muted"]:
-            p.chip(170, 376, "MUTED (0%)", RED, RED_BG, RED_EDGE, tags=("vol",), font=(F_MONO, 8, "bold"))
+            p.chip(170, cy, "MUTED (0%)", t["coral"], t["coral_bg"], t["coral_edge"], tags=tag, font=(F_MONO, 8, "bold"), track=0.6)
         else:
-            p.chip(170, 376, f"Volume {st['pct']}%", CYAN, CYAN_BG, CYAN_EDGE, tags=("vol",), font=(F_MONO, 8, "bold"), track=0.4)
-        p.text(566, 376, self._db_text(), DIM, (F_MONO, 8, "normal"), anchor="e", tags=("vol",))
+            p.chip(170, cy, f"Volume {st['pct']}%", t["chip_fg"], t["chip_bg"], t["chip_edge"], tags=tag,
+                   font=(F_MONO, 8, "bold"), track=0.4)
+        lit = self._segments()  # PEAK readout + 10-segment meter on the right
+        x, bar_w = 584, 10 * 6 + 9 * 2 + 10
+        p.rect(x - bar_w, cy - 8, x, cy + 8, fill="#000000" if not t["hard"] else t["track2"], outline=t["track_edge"], tags=tag)
+        for i in range(10):
+            col = t["green"] if i < 6 else "#facc15" if i < 8 else t["coral"]
+            fill = col if i < lit else (mix(col, "#000000", 0.78) if not t["hard"] else t["seg_off"])
+            sx = x - bar_w + 5 + i * 8
+            p.rect(sx, cy - 5, sx + 6, cy + 5, fill=fill, tags=tag)
+        x -= bar_w + 10
+        vcol = t["coral"] if st["muted"] else (t["green"] if not t["hard"] else t["green_edge"])
+        wv = self.glow(x, cy, self._db_text(), vcol, (F_MONO, 8, "bold"), mix(vcol, t["panel"], 0.75), anchor="e", tags=tag)
+        p.text(x - wv - 6, cy, "PEAK:", t["dim"], (F_MONO, 8, "normal"), anchor="e", tags=tag)
+        x0, span = 48, 524  # scale under the fader
+        for pct in (0, 25, 50, 75, 100):
+            lab, colr = f"{pct}%", (t["dimmer"] if not t["hard"] else t["txt2"])
+            if st["muted"] and pct == 0:
+                lab, colr = "0% [MUTED]", t["coral"]
+            elif st["muted"] and pct == 100:
+                lab = "100% [MAX]"
+            p.text(x0 + span * pct / 100, 490, lab, colr, (F_MONO, 8, "normal"),
+                   anchor="w" if pct == 0 else "e" if pct == 100 else "c", tags=tag)
 
     def _draw_mute(self, st, mode):
-        p, muted = self.p, st["muted"]
-        y1, y2 = 460, 496
-        p.rect(36, y1, 294, y2, fill=RED_BG if muted else "#0A1626", outline=RED if muted else EDGE_HI,
-               tags=("mute", "act_mute"))
-        col = RED if muted else TXT_SOFT
+        p, t, muted = self.p, self.t, st["muted"]
+        y1, y2 = 504, 538
+        tag = ("mute", "act_mute")
+        wide = 366 if muted else 288
+        coral = t["coral"]
+        if muted:
+            self.panel(34, y1, 34 + wide - 10, y2, t["coral_bg"] if not t["hard"] else "#ffe4e6", coral, tag, off=2)
+        else:
+            self.panel(34, y1, 34 + wide - 10, y2, t["mute_bg"], t["mute_edge"], tag, off=2)
+        col = coral if muted else t["mute_text"]
         cy = (y1 + y2) / 2
-        label = "MUTED (TAP TO UNMUTE)" if muted else "MUTE"
+        label = "UNMUTE MICROPHONE" if muted else "MUTE"
         font = (F_MONO, 9, "bold")
-        gx = 165 - (22 + p.tw(label, font, 1.2)) / 2
-        # speaker with a cross
-        p.poly([(gx, cy - 3), (gx + 4, cy - 3), (gx + 9, cy - 7), (gx + 9, cy + 7), (gx + 4, cy + 3), (gx, cy + 3)],
-               outline=col, tags=("mute", "act_mute"))
-        p.line([(gx + 12, cy - 3), (gx + 18, cy + 3)], col, tags=("mute", "act_mute"))
-        p.line([(gx + 18, cy - 3), (gx + 12, cy + 3)], col, tags=("mute", "act_mute"))
-        p.text(gx + 26, cy, label, col, font, tags=("mute", "act_mute"), track=1.2)
-        p.rect(306, y1, 564, y2, fill="#08111C", outline=EDGE, tags=("mute", "act_hotkey"))
+        gx = 34 + (wide - 10) / 2 - (24 + p.tw(label, font, 1.5)) / 2
+        p.rect(gx + 4, cy - 8, gx + 12, cy + 2, outline=coral, width=2, tags=tag)  # microphone with a slash
+        p.line([(gx + 1, cy - 1), (gx + 1, cy + 3), (gx + 8, cy + 8), (gx + 15, cy + 3), (gx + 15, cy - 1)], coral, tags=tag)
+        p.line([(gx + 8, cy + 8), (gx + 8, cy + 11)], coral, tags=tag)
+        p.line([(gx - 1, cy - 11), (gx + 17, cy + 11)], coral, width=2, tags=tag)
+        p.text(gx + 26, cy, label, col, font, tags=tag, track=1.5)
+        hx1, hx2, hk_tag = 34 + wide + 2, 586, ("mute", "act_hotkey")  # hotkey box
+        self.panel(hx1, y1, hx2, y2, t["field"], t["card_edge"] if not t["hard"] else t["edge"], hk_tag, off=2)
         key = self.app.hotkey_label()
         kf = (F_MONO, 9, "bold")
-        kw = max(22, p.tw(key, kf, 0.5) + 16)
+        kw = max(24, p.tw(key, kf, 0.4) + 18)
         lab = "HOTKEY:"
-        lw = p.tw(lab, (F_MONO, 9, "normal"), 1.2)
-        gx = 435 - (lw + 10 + kw) / 2
-        p.text(gx, cy, lab, DIM, (F_MONO, 9, "normal"), tags=("mute", "act_hotkey"), track=1.2)
+        lw = p.tw(lab, (F_MONO, 8, "normal"), 1.0)
+        gx = (hx1 + hx2) / 2 - (lw + 10 + kw) / 2
+        p.text(gx, cy, lab, t["txt2"], (F_MONO, 8, "normal"), tags=hk_tag, track=1.0)
         kx = gx + lw + 10
-        p.rect(kx, cy - 10, kx + kw, cy + 10, fill=FIELD, outline=EDGE_HI, tags=("mute", "act_hotkey"))
-        p.text(kx + kw / 2, cy, key, CYAN, kf, anchor="c", tags=("mute", "act_hotkey"), track=0.5)
+        p.rect(kx, cy - 11, kx + kw, cy + 11, fill=t["kbd_bg"], outline=t["kbd_edge"], tags=hk_tag)
+        p.text(kx + kw / 2, cy, key, t["accent"], kf, anchor="c", tags=hk_tag, track=0.4)
 
     def _draw_foot(self, st, mode):
-        p, a = self.p, self.app
-        col = {"live": CYAN, "connecting": AMBER, "off": "#56677D"}[mode]
-        p.oval(22, 541, 34, 553, fill=col if mode != "off" else "", outline="#56677D" if mode == "off" else "", tags=("foot",))
+        p, a, t = self.p, self.app, self.t
+        tag = ("foot",)
+        col = {"live": t["green"], "connecting": t["amber"], "off": t["dimmer"]}[mode]
+        if mode == "live" and self.blink:
+            col = mix(col, t["foot"], 0.5)
+        p.oval(22, 570, 34, 582, fill=col if mode != "off" else "", outline=t["dimmer"] if mode == "off" else "", tags=tag)
         ping = f"{a.ping_ms}" if (mode == "live" and a.ping_ms is not None) else "\u2014"
         pk = f"{a.pps}" if mode == "live" else "0"
-        parts = [("PACKETS: ", DIM, "normal"), (pk, CYAN, "bold"), (" pkts/s", DIM, "normal"), ("   PING: ", DIM, "normal"),
-                 (ping, CYAN, "bold"), (" ms", DIM, "normal")]
+        parts = [("PACKETS: ", t["dim"], "normal"), (pk, t["accent"], "bold"), (" pkts/s", t["dim"], "normal"),
+                 ("   PING: ", t["dim"], "normal"), (ping, t["green"] if not t["hard"] else t["green_edge"], "bold"), (" ms", t["dim"], "normal")]
         f = lambda wt: (F_MONO, 8, wt)
         total = sum(p.tw(s, f(wt)) for s, _, wt in parts)
-        room = 580 - total - 16 - 46  # what is left for the message once the stats on the right have their space
+        room = 600 - total - 16 - 46
         fnt = (F_MONO, 9, "bold")
         if mode == "live":
-            msg = p.fit(f"Connected // {a.ip.get().strip()}:{a.port.get()}", fnt, room)
-            p.text(46, 547, msg, CYAN, fnt, anchor="w", tags=("foot",))
+            msg = "Connected " + ("(Audio Muted)" if st["muted"] else "(Streaming)")
+            p.text(46, 576, p.fit(msg, fnt, room), t["txt"], fnt, anchor="w", tags=tag)
         else:
-            msg, colr = shorten(a.status, 92), TXT_SOFT if mode == "connecting" else DIM
-            if p.tw(msg, fnt) <= room:  # fits on one line: centre it on the dot
-                p.text(46, 547, msg, colr, fnt, anchor="w", tags=("foot",))
-            else:  # two smaller lines that sit inside the footer (never touching the line above it)
+            msg, colr = shorten(a.status, 92), t["txt2"] if mode == "connecting" else t["dim"]
+            if p.tw(msg, fnt) <= room:
+                p.text(46, 576, msg, colr, fnt, anchor="w", tags=tag)
+            else:  # two smaller lines that sit inside the footer
                 small = (F_MONO, 8, "bold")
                 lines, cur = [], ""
                 for word in msg.split(" "):
-                    t = (cur + " " + word).strip()
-                    if p.tw(t, small) <= room or not cur:
-                        cur = t
+                    tt = (cur + " " + word).strip()
+                    if p.tw(tt, small) <= room or not cur:
+                        cur = tt
                     else:
                         lines.append(cur)
                         cur = word
                 lines.append(cur)
                 lines = lines[:2]
                 lines[-1] = p.fit(lines[-1], small, room)
-                ys = (547,) if len(lines) == 1 else (541, 553)
-                for line, y in zip(lines, ys):
-                    p.text(46, y, line, colr, small, anchor="w", tags=("foot",))
-        x = 580 - total
+                for line, yy in zip(lines, (576,) if len(lines) == 1 else (570, 582)):
+                    p.text(46, yy, line, colr, small, anchor="w", tags=tag)
+        x = 600 - total
         for s_, colr, wt in parts:
-            x += p.text(x, 547, s_, colr, f(wt), tags=("foot",))
+            x += p.text(x, 576, s_, colr, f(wt), tags=tag)
 
 
 # ----------------------------------------------------------------- GUI
@@ -1607,6 +1796,7 @@ class App:
         self.active = False
         self.sink = None
         self.noise_cancel = bool(cfg.get("noise_cancel", True))
+        self.theme = cfg.get("theme", "dark") if cfg.get("theme") in ("dark", "light") else "dark"
         self.nc_error = ""
         self.installing = False
         self.setup_tries = int(cfg.get("setup_tries", 0))
@@ -1963,10 +2153,16 @@ class App:
     def save(self):
         try:
             with open(CFG_PATH, "w", encoding="utf-8") as f:
-                json.dump({"ip": self.ip.get().strip(), "port": self.port.get(), "setup_tries": self.setup_tries, "noise_cancel": self.noise_cancel,
+                json.dump({"ip": self.ip.get().strip(), "port": self.port.get(), "setup_tries": self.setup_tries, "noise_cancel": self.noise_cancel, "theme": self.theme,
                            "gain": self.gain, "hotkey": self.hotkey}, f)
         except Exception:
             pass
+
+    def set_theme(self, name):
+        if name in ("dark", "light") and name != self.theme:
+            self.theme = name
+            self.ui.set_theme(name)
+            self.save()
 
     # -- tray
     def on_close_button(self):
